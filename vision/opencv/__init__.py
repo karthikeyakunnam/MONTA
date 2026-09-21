@@ -1,0 +1,1 @@
+"""MONTA — OpenCV Vision."""

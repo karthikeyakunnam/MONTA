@@ -1,0 +1,1 @@
+"""MONTA — Vision Models."""

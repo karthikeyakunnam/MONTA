@@ -1,0 +1,5 @@
+"""MONTA Audio — Configuration."""
+
+AUDIO_SAMPLE_RATE = 44100
+AUDIO_FORMAT = "wav"
+DEFAULT_BPM = 120

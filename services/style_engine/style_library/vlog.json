@@ -1,0 +1,11 @@
+{
+  "name": "vlog",
+  "cut_speed": "slow",
+  "zoom": "none",
+  "music": "lo_fi",
+  "captions": "casual",
+  "transitions": ["dissolve", "slide"],
+  "color_grade": "vibrant",
+  "lut": "warm_vibrant.cube",
+  "aspect_ratio": "9:16"
+}

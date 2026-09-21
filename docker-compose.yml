@@ -1,0 +1,117 @@
+# ========================
+# MONTA — Docker Compose
+# ========================
+
+services:
+  # --- Database ---
+  postgres:
+    image: postgres:16-alpine
+    container_name: monta-postgres
+    environment:
+      POSTGRES_DB: monta
+      POSTGRES_USER: monta_user
+      POSTGRES_PASSWORD: monta_pass
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U monta_user -d monta"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Redis ---
+  redis:
+    image: redis:7-alpine
+    container_name: monta-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # --- Qdrant ---
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: monta-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  # --- Backend (FastAPI) ---
+  backend:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.backend
+    container_name: monta-backend
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    volumes:
+      - ./backend:/app/backend
+      - ./services:/app/services
+      - ./shared:/app/shared
+      - upload_storage:/app/storage/uploads
+      - render_storage:/app/storage/renders
+
+  # --- Celery Worker ---
+  worker:
+    build:
+      context: .
+      dockerfile: infra/docker/Dockerfile.worker
+    container_name: monta-worker
+    env_file:
+      - .env
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./workers:/app/workers
+      - ./services:/app/services
+      - ./orchestration:/app/orchestration
+      - ./vision:/app/vision
+      - ./speech:/app/speech
+      - ./models:/app/models
+      - ./memory:/app/memory
+      - ./shared:/app/shared
+      - upload_storage:/app/storage/uploads
+      - render_storage:/app/storage/renders
+
+  # --- Frontend (Next.js) ---
+  frontend:
+    build:
+      context: ./frontend/web
+      dockerfile: Dockerfile
+    container_name: monta-frontend
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend/web/src:/app/src
+
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  upload_storage:
+  render_storage:

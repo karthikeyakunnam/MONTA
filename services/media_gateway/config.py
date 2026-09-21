@@ -1,0 +1,7 @@
+"""MONTA — Media Gateway Config."""
+
+SUPPORTED_FORMATS = {"mp4", "mov"}
+MAX_CLIP_DURATION = 240
+MAX_CLIPS_1080P = 20
+MAX_CLIPS_4K = 4
+MAX_UPLOAD_SIZE_MB = 500

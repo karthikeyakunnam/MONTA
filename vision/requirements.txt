@@ -1,0 +1,5 @@
+torch>=2.4.0
+transformers>=4.45.0
+opencv-python>=4.10.0
+Pillow>=10.0.0
+google-generativeai>=0.8.0

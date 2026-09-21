@@ -1,0 +1,12 @@
+{
+  "name": "cinematic",
+  "cut_speed": "medium",
+  "zoom": "subtle",
+  "music": "orchestral",
+  "captions": "minimal",
+  "transitions": ["fade", "dissolve"],
+  "color_grade": "orange_teal",
+  "lut": "cinematic_ot.cube",
+  "aspect_ratio": "2.39:1",
+  "letterbox": true
+}

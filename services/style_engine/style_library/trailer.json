@@ -1,0 +1,11 @@
+{
+  "name": "trailer",
+  "cut_speed": "fast",
+  "zoom": "aggressive",
+  "music": "epic",
+  "captions": "bold",
+  "transitions": ["smash_cut", "flash"],
+  "color_grade": "dark",
+  "lut": "dark_dramatic.cube",
+  "aspect_ratio": "16:9"
+}

@@ -1,0 +1,14 @@
+FROM python:3.11-slim
+WORKDIR /app
+RUN apt-get update && apt-get install -y ffmpeg libgl1-mesa-glx && rm -rf /var/lib/apt/lists/*
+COPY workers/requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+COPY workers/ ./workers/
+COPY orchestration/ ./orchestration/
+COPY services/ ./services/
+COPY vision/ ./vision/
+COPY speech/ ./speech/
+COPY models/ ./models/
+COPY memory/ ./memory/
+COPY shared/ ./shared/
+CMD ["celery", "-A", "workers.celery_app", "worker", "--loglevel=info"]

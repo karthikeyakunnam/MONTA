@@ -1,0 +1,11 @@
+{
+  "name": "hype",
+  "cut_speed": "aggressive",
+  "zoom": "aggressive",
+  "music": "bass_heavy",
+  "captions": "impact",
+  "transitions": ["glitch", "zoom_in", "flash"],
+  "color_grade": "high_contrast",
+  "lut": "high_contrast.cube",
+  "aspect_ratio": "9:16"
+}

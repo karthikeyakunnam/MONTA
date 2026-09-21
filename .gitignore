@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Next.js
+.next/
+out/
+
+# Model weights (large files)
+model_weights/
+*.bin
+*.safetensors
+*.gguf
+*.ggml
+
+# Storage
+storage/uploads/*
+storage/renders/*
+!storage/uploads/.gitkeep
+!storage/renders/.gitkeep
+
+# Logs
+*.log
+logs/
+
+# Docker
+docker-compose.override.yml
+
+# Celery
+celerybeat-schedule
+celerybeat.pid
+
+# Coverage
+htmlcov/
+.coverage
+coverage.xml
+
+# Jupyter
+.ipynb_checkpoints/
+
+# LUTs (large binary files — track with Git LFS)
+# services/edit_executor/luts/*.cube

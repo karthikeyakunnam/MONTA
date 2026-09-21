@@ -1,0 +1,30 @@
+/* MONTA — Global Styles */
+
+:root {
+  --color-bg: #0a0a0a;
+  --color-surface: #141414;
+  --color-surface-hover: #1a1a1a;
+  --color-border: #2a2a2a;
+  --color-text: #fafafa;
+  --color-text-muted: #888;
+  --color-accent: #ff6b35;
+  --color-accent-hover: #ff8555;
+  --color-success: #22c55e;
+  --color-error: #ef4444;
+  --font-sans: 'Inter', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  font-family: var(--font-sans);
+  background: var(--color-bg);
+  color: var(--color-text);
+  -webkit-font-smoothing: antialiased;
+}
