@@ -1,0 +1,201 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "product_headphones_launch",
+  "category": "product_launch",
+  "description": "Premium headphone launch ad: tease, problem, reveal, proof, CTA.",
+  "prompt": "product launch video for our new headphones, apple style, sleek, 30 seconds",
+  "platform": "instagram",
+  "clips": [
+    {
+      "clip_id": "h1",
+      "duration_s": 6.0,
+      "activities": [
+        "slow orbit around box"
+      ],
+      "objects": [
+        "box",
+        "product"
+      ],
+      "scene_type": "studio",
+      "shot_type": "close_up",
+      "camera_motion": "pan",
+      "lighting": "good",
+      "quality_score": 9.0,
+      "energy_score": 3.0,
+      "emotion": "luxury",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.85
+        },
+        {
+          "role": "establishing",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "h2",
+      "duration_s": 7.0,
+      "activities": [
+        "commuter annoyed by train noise"
+      ],
+      "objects": [
+        "train",
+        "earbuds"
+      ],
+      "scene_type": "subway",
+      "shot_type": "medium",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 7.8,
+      "energy_score": 4.2,
+      "emotion": "dramatic",
+      "story_roles": [
+        {
+          "role": "struggle",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "h3",
+      "duration_s": 6.0,
+      "activities": [
+        "headphones revealed, light sweep"
+      ],
+      "objects": [
+        "headphones",
+        "product"
+      ],
+      "scene_type": "studio",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.5,
+      "energy_score": 6.8,
+      "emotion": "luxury",
+      "story_roles": [
+        {
+          "role": "product_reveal",
+          "confidence": 0.95
+        },
+        {
+          "role": "hero",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "h4",
+      "duration_s": 7.0,
+      "activities": [
+        "person wearing headphones smiling"
+      ],
+      "objects": [
+        "headphones"
+      ],
+      "scene_type": "city street",
+      "shot_type": "medium",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.6,
+      "energy_score": 5.8,
+      "emotion": "uplifting",
+      "story_roles": [
+        {
+          "role": "progress",
+          "confidence": 0.8
+        },
+        {
+          "role": "reaction",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "h5",
+      "duration_s": 5.0,
+      "activities": [
+        "close up of noise cancelling button"
+      ],
+      "objects": [
+        "headphones"
+      ],
+      "scene_type": "studio",
+      "shot_type": "extreme_close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.0,
+      "energy_score": 4.4,
+      "emotion": "luxury",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.9
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "h6",
+      "duration_s": 5.0,
+      "activities": [
+        "logo on headphones"
+      ],
+      "objects": [
+        "logo",
+        "headphones"
+      ],
+      "scene_type": "studio",
+      "shot_type": "close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.2,
+      "energy_score": 4.8,
+      "emotion": "luxury",
+      "story_roles": [
+        {
+          "role": "payoff",
+          "confidence": 0.8
+        },
+        {
+          "role": "product_reveal",
+          "confidence": 0.7
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "product_launch"
+    ],
+    "genre": "product",
+    "pace": "medium",
+    "emotion": "luxury",
+    "emotional_arc": {
+      "shape": "steady",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "h3"
+    ],
+    "must_exclude": [],
+    "duration_s": 30.0,
+    "min_judge_score": 6.5
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

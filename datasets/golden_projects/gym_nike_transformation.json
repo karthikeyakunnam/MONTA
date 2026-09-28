@@ -1,0 +1,231 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "gym_nike_transformation",
+  "category": "gym",
+  "description": "Nike-style transformation reel: slow heavy open, aggressive build, triumphant flex.",
+  "prompt": "make this feel like nike ad slow start then huge motivation ending use dark colors and aggressive cuts",
+  "platform": "instagram",
+  "clips": [
+    {
+      "clip_id": "g1",
+      "duration_s": 6.0,
+      "activities": [
+        "sitting on bench, head down"
+      ],
+      "objects": [
+        "bench",
+        "dumbbell"
+      ],
+      "scene_type": "gym",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 7.5,
+      "energy_score": 2.5,
+      "emotion": "dramatic",
+      "story_roles": [
+        {
+          "role": "struggle",
+          "confidence": 0.85
+        },
+        {
+          "role": "establishing",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "g2",
+      "duration_s": 5.0,
+      "activities": [
+        "chalking hands"
+      ],
+      "objects": [
+        "chalk",
+        "barbell"
+      ],
+      "scene_type": "gym",
+      "shot_type": "close_up",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 7.8,
+      "energy_score": 4.0,
+      "emotion": "intense",
+      "story_roles": [
+        {
+          "role": "preparation",
+          "confidence": 0.85
+        },
+        {
+          "role": "detail",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "g3",
+      "duration_s": 7.0,
+      "activities": [
+        "barbell squat"
+      ],
+      "objects": [
+        "barbell",
+        "rack"
+      ],
+      "scene_type": "gym",
+      "shot_type": "medium",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.2,
+      "energy_score": 6.2,
+      "emotion": "motivational",
+      "story_roles": [
+        {
+          "role": "progress",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "g4",
+      "duration_s": 6.0,
+      "activities": [
+        "heavy deadlift"
+      ],
+      "objects": [
+        "barbell",
+        "plates"
+      ],
+      "scene_type": "gym",
+      "shot_type": "wide",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.4,
+      "energy_score": 7.6,
+      "emotion": "intense",
+      "story_roles": [
+        {
+          "role": "intensity",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "g5",
+      "duration_s": 5.0,
+      "activities": [
+        "deadlift lockout, shouting"
+      ],
+      "objects": [
+        "barbell"
+      ],
+      "scene_type": "gym",
+      "shot_type": "close_up",
+      "camera_motion": "dynamic",
+      "lighting": "good",
+      "quality_score": 8.6,
+      "energy_score": 9.0,
+      "emotion": "aggressive",
+      "story_roles": [
+        {
+          "role": "peak",
+          "confidence": 0.9
+        },
+        {
+          "role": "intensity",
+          "confidence": 0.7
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "g6",
+      "duration_s": 6.0,
+      "activities": [
+        "flexing in mirror"
+      ],
+      "objects": [
+        "mirror"
+      ],
+      "scene_type": "gym",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.4,
+      "energy_score": 7.8,
+      "emotion": "inspiring",
+      "story_roles": [
+        {
+          "role": "hero",
+          "confidence": 0.9
+        },
+        {
+          "role": "payoff",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "g7",
+      "duration_s": 8.0,
+      "activities": [
+        "scrolling phone on bench"
+      ],
+      "objects": [
+        "phone"
+      ],
+      "scene_type": "gym",
+      "shot_type": "medium",
+      "camera_motion": "shaky",
+      "lighting": "good",
+      "quality_score": 3.0,
+      "energy_score": 1.0,
+      "emotion": "neutral",
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.3
+        }
+      ],
+      "usable": true,
+      "note": "off-topic, blurry"
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "motivational_reel",
+      "transformation",
+      "fitness_reel"
+    ],
+    "genre": "fitness",
+    "pace": "aggressive",
+    "emotion": "motivational",
+    "emotional_arc": {
+      "shape": "build",
+      "start_pace": "slow",
+      "end_emotion": "motivational"
+    },
+    "hero_clip_ids": [
+      "g6",
+      "g5"
+    ],
+    "must_exclude": [
+      "g7"
+    ],
+    "duration_s": null,
+    "min_judge_score": 7.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

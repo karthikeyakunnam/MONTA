@@ -1,0 +1,144 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "podcast_comedy_short",
+  "category": "podcast",
+  "description": "Comedy podcast short: punchline-driven, quick reactions.",
+  "prompt": "funny podcast moment for tiktok, fast, 25s",
+  "platform": "tiktok",
+  "clips": [
+    {
+      "clip_id": "q1",
+      "duration_s": 30.0,
+      "activities": [
+        "telling a story, animated"
+      ],
+      "objects": [
+        "microphone"
+      ],
+      "scene_type": "podcast studio",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.0,
+      "energy_score": 4.0,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "talking_head",
+          "confidence": 0.9
+        },
+        {
+          "role": "hero",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "q2",
+      "duration_s": 12.0,
+      "activities": [
+        "co-host reacting shocked"
+      ],
+      "objects": [
+        "microphone"
+      ],
+      "scene_type": "podcast studio",
+      "shot_type": "close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.2,
+      "energy_score": 5.0,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "reaction",
+          "confidence": 0.9
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "q3",
+      "duration_s": 10.0,
+      "activities": [
+        "everyone laughing hard"
+      ],
+      "objects": [
+        "microphone"
+      ],
+      "scene_type": "podcast studio",
+      "shot_type": "wide",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.1,
+      "energy_score": 6.0,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "reaction",
+          "confidence": 0.85
+        },
+        {
+          "role": "payoff",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "q4",
+      "duration_s": 25.0,
+      "activities": [
+        "setup of the story"
+      ],
+      "objects": [
+        "microphone"
+      ],
+      "scene_type": "podcast studio",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 7.9,
+      "energy_score": 2.6,
+      "emotion": "neutral",
+      "story_roles": [
+        {
+          "role": "talking_head",
+          "confidence": 0.9
+        },
+        {
+          "role": "establishing",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "podcast_highlight"
+    ],
+    "genre": "podcast",
+    "pace": "fast",
+    "emotion": "joyful",
+    "emotional_arc": {
+      "shape": "hook_first",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "q1",
+      "q3"
+    ],
+    "must_exclude": [],
+    "duration_s": 25.0,
+    "min_judge_score": 6.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

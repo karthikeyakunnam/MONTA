@@ -1,22 +1,10 @@
-"""MONTA — Shared Type Definitions."""
+"""MONTA — Shared Type Definitions.
 
-from typing import TypedDict, List, Optional
+Layer 3–7 contracts (intent, clips, context, director, story) live in
+``shared.contracts`` as validated pydantic models.
+"""
 
-
-class ClipMetadata(TypedDict):
-    fps: float
-    resolution: str
-    duration: float
-    clip_id: str
-    format: str
-
-
-class EditingIntent(TypedDict):
-    genre: str
-    pacing: str
-    color: str
-    emotion: str
-    target: str
+from typing import TypedDict
 
 
 class TimelineEntry(TypedDict):
@@ -24,10 +12,3 @@ class TimelineEntry(TypedDict):
     start: float
     end: float
     transition: str
-
-
-class StoryAct(TypedDict):
-    act_number: int
-    theme: str
-    clips: List[str]
-    mood: str

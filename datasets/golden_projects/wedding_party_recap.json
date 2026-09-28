@@ -1,0 +1,169 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "wedding_party_recap",
+  "category": "wedding",
+  "description": "Energetic wedding-party recap for Instagram.",
+  "prompt": "fun wedding reception recap for insta, joyful, quick",
+  "platform": "instagram",
+  "clips": [
+    {
+      "clip_id": "r1",
+      "duration_s": 6.0,
+      "activities": [
+        "guests arriving"
+      ],
+      "objects": [
+        "venue"
+      ],
+      "scene_type": "reception",
+      "shot_type": "wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 7.8,
+      "energy_score": 4.0,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "establishing",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "r2",
+      "duration_s": 5.0,
+      "activities": [
+        "toast speech laughter"
+      ],
+      "objects": [
+        "microphone",
+        "glass"
+      ],
+      "scene_type": "reception",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.0,
+      "energy_score": 5.2,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "reaction",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "r3",
+      "duration_s": 7.0,
+      "activities": [
+        "bride and groom first dance"
+      ],
+      "objects": [
+        "dance floor"
+      ],
+      "scene_type": "reception",
+      "shot_type": "medium",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.8,
+      "energy_score": 6.0,
+      "emotion": "romantic",
+      "story_roles": [
+        {
+          "role": "hero",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "r4",
+      "duration_s": 6.0,
+      "activities": [
+        "dance floor packed, dj"
+      ],
+      "objects": [
+        "dj",
+        "lights"
+      ],
+      "scene_type": "reception",
+      "shot_type": "wide",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.2,
+      "energy_score": 8.4,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "celebration",
+          "confidence": 0.9
+        },
+        {
+          "role": "peak",
+          "confidence": 0.7
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "r5",
+      "duration_s": 5.0,
+      "activities": [
+        "confetti cannon"
+      ],
+      "objects": [
+        "confetti"
+      ],
+      "scene_type": "reception",
+      "shot_type": "wide",
+      "camera_motion": "dynamic",
+      "lighting": "good",
+      "quality_score": 8.5,
+      "energy_score": 8.8,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "celebration",
+          "confidence": 0.85
+        },
+        {
+          "role": "peak",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "wedding",
+      "event"
+    ],
+    "genre": "wedding",
+    "pace": "fast",
+    "emotion": "joyful",
+    "emotional_arc": {
+      "shape": "build",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "r3",
+      "r5",
+      "r4"
+    ],
+    "must_exclude": [],
+    "duration_s": null,
+    "min_judge_score": 6.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

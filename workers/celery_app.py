@@ -17,12 +17,16 @@ app = Celery(
     broker=BROKER_URL,
     backend=RESULT_BACKEND,
     include=[
-        "workers.tasks.upload_tasks",
-        "workers.tasks.analysis_tasks",
+        "workers.tasks.pipeline_tasks",
         "workers.tasks.render_tasks",
         "workers.tasks.export_tasks",
     ],
 )
+
+app.conf.beat_schedule = {
+    # Interrupted uploads leave temp files in storage/.incoming; clear them hourly.
+    "sweep-incoming-uploads": {"task": "tasks.sweep_incoming", "schedule": 3600.0, "kwargs": {"older_than_s": 3600}},
+}
 
 app.conf.update(
     task_serializer="json",

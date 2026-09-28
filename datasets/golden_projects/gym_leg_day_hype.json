@@ -1,0 +1,196 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "gym_leg_day_hype",
+  "category": "gym",
+  "description": "High-energy leg-day montage for TikTok, fast cuts from warm-up to max effort.",
+  "prompt": "leg day hype edit for tiktok, fast cuts, 20 sec, gymshark vibe",
+  "platform": "tiktok",
+  "clips": [
+    {
+      "clip_id": "l1",
+      "duration_s": 5.0,
+      "activities": [
+        "stretching hamstrings"
+      ],
+      "objects": [
+        "mat"
+      ],
+      "scene_type": "gym",
+      "shot_type": "wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 7.2,
+      "energy_score": 3.5,
+      "emotion": "calm",
+      "story_roles": [
+        {
+          "role": "preparation",
+          "confidence": 0.8
+        },
+        {
+          "role": "establishing",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "l2",
+      "duration_s": 6.0,
+      "activities": [
+        "walking lunges"
+      ],
+      "objects": [
+        "dumbbell"
+      ],
+      "scene_type": "gym",
+      "shot_type": "medium",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 7.8,
+      "energy_score": 5.8,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "progress",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "l3",
+      "duration_s": 6.0,
+      "activities": [
+        "leg press reps"
+      ],
+      "objects": [
+        "leg press"
+      ],
+      "scene_type": "gym",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 7.6,
+      "energy_score": 6.5,
+      "emotion": "intense",
+      "story_roles": [
+        {
+          "role": "progress",
+          "confidence": 0.7
+        },
+        {
+          "role": "intensity",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "l4",
+      "duration_s": 5.0,
+      "activities": [
+        "heavy squat"
+      ],
+      "objects": [
+        "barbell"
+      ],
+      "scene_type": "gym",
+      "shot_type": "wide",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.3,
+      "energy_score": 8.2,
+      "emotion": "intense",
+      "story_roles": [
+        {
+          "role": "intensity",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "l5",
+      "duration_s": 4.0,
+      "activities": [
+        "box jumps"
+      ],
+      "objects": [
+        "plyo box"
+      ],
+      "scene_type": "gym",
+      "shot_type": "medium",
+      "camera_motion": "dynamic",
+      "lighting": "good",
+      "quality_score": 8.0,
+      "energy_score": 8.8,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "peak",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "l6",
+      "duration_s": 5.0,
+      "activities": [
+        "collapsing on floor exhausted, smiling"
+      ],
+      "objects": [
+        "floor"
+      ],
+      "scene_type": "gym",
+      "shot_type": "close_up",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.5,
+      "energy_score": 6.5,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "payoff",
+          "confidence": 0.85
+        },
+        {
+          "role": "hero",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "fitness_reel",
+      "motivational_reel"
+    ],
+    "genre": "fitness",
+    "pace": "fast",
+    "emotion": "energetic",
+    "emotional_arc": {
+      "shape": "build",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "l6",
+      "l5",
+      "l4"
+    ],
+    "must_exclude": [],
+    "duration_s": 20.0,
+    "min_judge_score": 6.5
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

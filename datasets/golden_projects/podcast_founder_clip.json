@@ -1,0 +1,174 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "podcast_founder_clip",
+  "category": "podcast",
+  "description": "Founder podcast highlight: open on the strongest line, context, insight, laugh.",
+  "prompt": "podcast clip from our episode with the founder, inspiring, 45 seconds for youtube shorts",
+  "platform": "youtube_short",
+  "clips": [
+    {
+      "clip_id": "p1",
+      "duration_s": 40.0,
+      "activities": [
+        "speaking into microphone, emphatic"
+      ],
+      "objects": [
+        "microphone",
+        "headphones"
+      ],
+      "scene_type": "podcast studio",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.4,
+      "energy_score": 3.4,
+      "emotion": "inspiring",
+      "story_roles": [
+        {
+          "role": "talking_head",
+          "confidence": 0.9
+        },
+        {
+          "role": "hero",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "p2",
+      "duration_s": 35.0,
+      "activities": [
+        "host asking question"
+      ],
+      "objects": [
+        "microphone"
+      ],
+      "scene_type": "podcast studio",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.0,
+      "energy_score": 2.4,
+      "emotion": "neutral",
+      "story_roles": [
+        {
+          "role": "talking_head",
+          "confidence": 0.9
+        },
+        {
+          "role": "establishing",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "p3",
+      "duration_s": 50.0,
+      "activities": [
+        "guest explaining idea with hand gestures"
+      ],
+      "objects": [
+        "microphone"
+      ],
+      "scene_type": "podcast studio",
+      "shot_type": "close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.3,
+      "energy_score": 3.0,
+      "emotion": "inspiring",
+      "story_roles": [
+        {
+          "role": "talking_head",
+          "confidence": 0.9
+        },
+        {
+          "role": "progress",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "p4",
+      "duration_s": 20.0,
+      "activities": [
+        "both laughing"
+      ],
+      "objects": [
+        "microphone"
+      ],
+      "scene_type": "podcast studio",
+      "shot_type": "wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.1,
+      "energy_score": 4.2,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "reaction",
+          "confidence": 0.85
+        },
+        {
+          "role": "payoff",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "p5",
+      "duration_s": 15.0,
+      "activities": [
+        "b-roll of office"
+      ],
+      "objects": [
+        "desk",
+        "laptop"
+      ],
+      "scene_type": "office",
+      "shot_type": "wide",
+      "camera_motion": "pan",
+      "lighting": "good",
+      "quality_score": 7.5,
+      "energy_score": 2.8,
+      "emotion": "calm",
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "podcast_highlight"
+    ],
+    "genre": "podcast",
+    "pace": "medium",
+    "emotion": "inspiring",
+    "emotional_arc": {
+      "shape": "hook_first",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "p1"
+    ],
+    "must_exclude": [],
+    "duration_s": 45.0,
+    "min_judge_score": 6.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

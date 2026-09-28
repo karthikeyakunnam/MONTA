@@ -14,8 +14,8 @@ from app.db.base import Base
 class Timeline(Base):
     __tablename__ = "timelines"
 
-    id = Column(String, primary_key=True)
-    project_id = Column(String, ForeignKey("projects.id"), nullable=False, unique=True)
+    id = Column(String(64), primary_key=True)
+    project_id = Column(String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, unique=True)
     
     # Story structure (Layer 7 output)
     story_acts = Column(JSON, nullable=True)
@@ -36,7 +36,7 @@ class Timeline(Base):
     critic_feedback = Column(JSON, nullable=True)
     revision_count = Column(Float, default=0)
     
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
 
     # Relationships

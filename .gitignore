@@ -9,10 +9,12 @@ dist/
 build/
 .eggs/
 
-# Environment
+# Environment — ignore every .env variant, then re-include the tracked template.
+# `.env.save` (an editor backup holding real credentials) matched none of the old
+# patterns and was one `git add .` away from being committed.
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 
 # IDE
 .vscode/

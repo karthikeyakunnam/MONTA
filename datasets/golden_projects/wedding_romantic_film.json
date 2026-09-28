@@ -1,0 +1,203 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "wedding_romantic_film",
+  "category": "wedding",
+  "description": "Romantic wedding highlight: preparation, vows, celebration, send-off.",
+  "prompt": "our wedding day, emotional and romantic, vows, 60 seconds, soft piano",
+  "platform": "youtube",
+  "clips": [
+    {
+      "clip_id": "w1",
+      "duration_s": 10.0,
+      "activities": [
+        "bride getting ready"
+      ],
+      "objects": [
+        "dress",
+        "mirror"
+      ],
+      "scene_type": "bridal suite",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.4,
+      "energy_score": 2.8,
+      "emotion": "romantic",
+      "story_roles": [
+        {
+          "role": "preparation",
+          "confidence": 0.9
+        },
+        {
+          "role": "detail",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "w2",
+      "duration_s": 8.0,
+      "activities": [
+        "rings on table"
+      ],
+      "objects": [
+        "rings"
+      ],
+      "scene_type": "bridal suite",
+      "shot_type": "extreme_close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.8,
+      "energy_score": 2.2,
+      "emotion": "romantic",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.9
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "w3",
+      "duration_s": 14.0,
+      "activities": [
+        "exchanging vows, tears"
+      ],
+      "objects": [
+        "altar",
+        "bouquet"
+      ],
+      "scene_type": "church",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.3,
+      "energy_score": 4.2,
+      "emotion": "emotional",
+      "story_roles": [
+        {
+          "role": "hero",
+          "confidence": 0.9
+        },
+        {
+          "role": "reaction",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "w4",
+      "duration_s": 12.0,
+      "activities": [
+        "guests dancing"
+      ],
+      "objects": [
+        "dance floor"
+      ],
+      "scene_type": "reception",
+      "shot_type": "wide",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.2,
+      "energy_score": 7.4,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "celebration",
+          "confidence": 0.9
+        },
+        {
+          "role": "b_roll",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "w5",
+      "duration_s": 9.0,
+      "activities": [
+        "first dance"
+      ],
+      "objects": [
+        "dance floor"
+      ],
+      "scene_type": "reception",
+      "shot_type": "medium",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.9,
+      "energy_score": 5.6,
+      "emotion": "romantic",
+      "story_roles": [
+        {
+          "role": "celebration",
+          "confidence": 0.7
+        },
+        {
+          "role": "payoff",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "w6",
+      "duration_s": 10.0,
+      "activities": [
+        "couple walking away under sparklers"
+      ],
+      "objects": [
+        "sparklers"
+      ],
+      "scene_type": "exterior",
+      "shot_type": "wide",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 9.1,
+      "energy_score": 4.8,
+      "emotion": "nostalgic",
+      "story_roles": [
+        {
+          "role": "payoff",
+          "confidence": 0.9
+        },
+        {
+          "role": "reaction",
+          "confidence": 0.4
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "wedding"
+    ],
+    "genre": "wedding",
+    "pace": "slow",
+    "emotion": "romantic",
+    "emotional_arc": {
+      "shape": "build_release",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "w3"
+    ],
+    "must_exclude": [],
+    "duration_s": 60.0,
+    "min_judge_score": 6.5
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

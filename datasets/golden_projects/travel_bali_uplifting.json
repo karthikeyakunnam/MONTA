@@ -1,0 +1,204 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "travel_bali_uplifting",
+  "category": "travel",
+  "description": "Uplifting Bali travel recap: arrival, textures, cliff-jump highlight, sunset reflection.",
+  "prompt": "travel vlog from my trip to bali, uplifting, 30 seconds",
+  "platform": "instagram",
+  "clips": [
+    {
+      "clip_id": "t1",
+      "duration_s": 6.0,
+      "activities": [
+        "looking out airplane window"
+      ],
+      "objects": [
+        "airplane window"
+      ],
+      "scene_type": "airplane",
+      "shot_type": "close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.0,
+      "energy_score": 3.5,
+      "emotion": "calm",
+      "story_roles": [
+        {
+          "role": "establishing",
+          "confidence": 0.9
+        },
+        {
+          "role": "transition",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "t2",
+      "duration_s": 7.0,
+      "activities": [
+        "eating street food"
+      ],
+      "objects": [
+        "food stall"
+      ],
+      "scene_type": "street market",
+      "shot_type": "medium",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 7.8,
+      "energy_score": 5.2,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.8
+        },
+        {
+          "role": "detail",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "t3",
+      "duration_s": 6.0,
+      "activities": [
+        "walking rice terraces"
+      ],
+      "objects": [
+        "rice field"
+      ],
+      "scene_type": "rice terraces",
+      "shot_type": "wide",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.6,
+      "energy_score": 4.8,
+      "emotion": "uplifting",
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.8
+        },
+        {
+          "role": "progress",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "t4",
+      "duration_s": 5.0,
+      "activities": [
+        "cliff jump into ocean"
+      ],
+      "objects": [
+        "cliff",
+        "ocean"
+      ],
+      "scene_type": "coast",
+      "shot_type": "wide",
+      "camera_motion": "dynamic",
+      "lighting": "good",
+      "quality_score": 9.0,
+      "energy_score": 8.8,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "peak",
+          "confidence": 0.9
+        },
+        {
+          "role": "hero",
+          "confidence": 0.75
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "t5",
+      "duration_s": 8.0,
+      "activities": [
+        "watching sunset on beach"
+      ],
+      "objects": [
+        "beach",
+        "sun"
+      ],
+      "scene_type": "beach",
+      "shot_type": "extreme_wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.2,
+      "energy_score": 3.0,
+      "emotion": "nostalgic",
+      "story_roles": [
+        {
+          "role": "payoff",
+          "confidence": 0.85
+        },
+        {
+          "role": "establishing",
+          "confidence": 0.4
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "t6",
+      "duration_s": 4.0,
+      "activities": [
+        "lens covered by finger"
+      ],
+      "objects": [],
+      "scene_type": "unknown",
+      "shot_type": "unknown",
+      "camera_motion": "shaky",
+      "lighting": "good",
+      "quality_score": 2.0,
+      "energy_score": 2.0,
+      "emotion": null,
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.2
+        }
+      ],
+      "usable": false,
+      "note": "obstructed lens"
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "travel",
+      "cinematic_montage"
+    ],
+    "genre": "travel",
+    "pace": "medium",
+    "emotion": "uplifting",
+    "emotional_arc": {
+      "shape": "build_release",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "t4"
+    ],
+    "must_exclude": [
+      "t6"
+    ],
+    "duration_s": 30.0,
+    "min_judge_score": 6.5
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

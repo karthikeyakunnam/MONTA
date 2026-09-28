@@ -1,0 +1,176 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "product_sneaker_drop",
+  "category": "product_launch",
+  "description": "Streetwear sneaker drop, hype and fast.",
+  "prompt": "sneaker drop promo, hype, fast cuts, for tiktok",
+  "platform": "tiktok",
+  "clips": [
+    {
+      "clip_id": "s1",
+      "duration_s": 5.0,
+      "activities": [
+        "shoebox lid opening"
+      ],
+      "objects": [
+        "box",
+        "sneakers"
+      ],
+      "scene_type": "studio",
+      "shot_type": "close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.8,
+      "energy_score": 4.5,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.85
+        },
+        {
+          "role": "establishing",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "s2",
+      "duration_s": 6.0,
+      "activities": [
+        "skater doing kickflip"
+      ],
+      "objects": [
+        "skateboard",
+        "sneakers"
+      ],
+      "scene_type": "skatepark",
+      "shot_type": "medium",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.6,
+      "energy_score": 8.4,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "intensity",
+          "confidence": 0.8
+        },
+        {
+          "role": "progress",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "s3",
+      "duration_s": 5.0,
+      "activities": [
+        "sneakers spinning on turntable"
+      ],
+      "objects": [
+        "sneakers",
+        "product"
+      ],
+      "scene_type": "studio",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.3,
+      "energy_score": 6.0,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "product_reveal",
+          "confidence": 0.95
+        },
+        {
+          "role": "hero",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "s4",
+      "duration_s": 5.0,
+      "activities": [
+        "sole close up"
+      ],
+      "objects": [
+        "sneakers"
+      ],
+      "scene_type": "studio",
+      "shot_type": "extreme_close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.0,
+      "energy_score": 3.8,
+      "emotion": "luxury",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.9
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "s5",
+      "duration_s": 4.0,
+      "activities": [
+        "crowd lining up at store"
+      ],
+      "objects": [
+        "store",
+        "crowd"
+      ],
+      "scene_type": "street",
+      "shot_type": "wide",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.0,
+      "energy_score": 6.6,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "reaction",
+          "confidence": 0.8
+        },
+        {
+          "role": "payoff",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "product_launch"
+    ],
+    "genre": "product",
+    "pace": "fast",
+    "emotion": "energetic",
+    "emotional_arc": {
+      "shape": "steady",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "s3"
+    ],
+    "must_exclude": [],
+    "duration_s": null,
+    "min_judge_score": 6.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

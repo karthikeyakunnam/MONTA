@@ -1,4 +1,4 @@
-.PHONY: help dev stop backend frontend worker db-up db-migrate setup clean
+.PHONY: help dev stop backend frontend worker db-up db-migrate setup clean test
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -50,6 +50,13 @@ db-migrate: ## Run database migrations
 
 db-revision: ## Create new migration
 	cd backend && alembic revision --autogenerate -m "$(MSG)"
+
+# ========================
+# Tests
+# ========================
+
+test: ## Run the Layer 3-7 test suite
+	python -m pytest
 
 # ========================
 # Docker

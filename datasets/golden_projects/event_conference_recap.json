@@ -1,0 +1,173 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "event_conference_recap",
+  "category": "event",
+  "description": "Tech conference recap for LinkedIn-style audience.",
+  "prompt": "recap of our tech conference, inspiring, medium pace",
+  "platform": "general",
+  "clips": [
+    {
+      "clip_id": "c1",
+      "duration_s": 8.0,
+      "activities": [
+        "attendees registering"
+      ],
+      "objects": [
+        "badge",
+        "desk"
+      ],
+      "scene_type": "conference hall",
+      "shot_type": "wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 7.8,
+      "energy_score": 3.8,
+      "emotion": "uplifting",
+      "story_roles": [
+        {
+          "role": "establishing",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "c2",
+      "duration_s": 10.0,
+      "activities": [
+        "keynote speaker on stage"
+      ],
+      "objects": [
+        "stage",
+        "podium"
+      ],
+      "scene_type": "conference hall",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.6,
+      "energy_score": 5.2,
+      "emotion": "inspiring",
+      "story_roles": [
+        {
+          "role": "hero",
+          "confidence": 0.8
+        },
+        {
+          "role": "talking_head",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "c3",
+      "duration_s": 8.0,
+      "activities": [
+        "audience applauding"
+      ],
+      "objects": [
+        "audience"
+      ],
+      "scene_type": "conference hall",
+      "shot_type": "wide",
+      "camera_motion": "pan",
+      "lighting": "good",
+      "quality_score": 8.2,
+      "energy_score": 6.4,
+      "emotion": "inspiring",
+      "story_roles": [
+        {
+          "role": "reaction",
+          "confidence": 0.85
+        },
+        {
+          "role": "peak",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "c4",
+      "duration_s": 7.0,
+      "activities": [
+        "networking conversations"
+      ],
+      "objects": [
+        "coffee"
+      ],
+      "scene_type": "lobby",
+      "shot_type": "medium",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 7.6,
+      "energy_score": 4.4,
+      "emotion": "uplifting",
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "c5",
+      "duration_s": 6.0,
+      "activities": [
+        "product demo booth"
+      ],
+      "objects": [
+        "laptop",
+        "screen"
+      ],
+      "scene_type": "expo floor",
+      "shot_type": "close_up",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.0,
+      "energy_score": 5.0,
+      "emotion": "inspiring",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.7
+        },
+        {
+          "role": "progress",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "event",
+      "product_launch"
+    ],
+    "genre": "event",
+    "pace": "medium",
+    "emotion": "inspiring",
+    "emotional_arc": {
+      "shape": "build",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "c2",
+      "c3"
+    ],
+    "must_exclude": [],
+    "duration_s": null,
+    "min_judge_score": 6.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

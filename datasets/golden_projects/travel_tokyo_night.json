@@ -1,0 +1,173 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "travel_tokyo_night",
+  "category": "travel",
+  "description": "Moody Tokyo night walk, cinematic and calm, neon city.",
+  "prompt": "cinematic tokyo night walk, calm and moody, neon colors, slow",
+  "platform": "instagram",
+  "clips": [
+    {
+      "clip_id": "n1",
+      "duration_s": 8.0,
+      "activities": [
+        "train arriving at station"
+      ],
+      "objects": [
+        "train"
+      ],
+      "scene_type": "station",
+      "shot_type": "wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.4,
+      "energy_score": 4.0,
+      "emotion": "calm",
+      "story_roles": [
+        {
+          "role": "establishing",
+          "confidence": 0.9
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "n2",
+      "duration_s": 7.0,
+      "activities": [
+        "walking through crossing crowd"
+      ],
+      "objects": [
+        "crowd",
+        "crosswalk"
+      ],
+      "scene_type": "city street",
+      "shot_type": "wide",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.6,
+      "energy_score": 5.5,
+      "emotion": "dramatic",
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.8
+        },
+        {
+          "role": "progress",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "n3",
+      "duration_s": 6.0,
+      "activities": [
+        "neon signs reflecting in puddle"
+      ],
+      "objects": [
+        "neon sign",
+        "puddle"
+      ],
+      "scene_type": "city street",
+      "shot_type": "close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.0,
+      "energy_score": 3.2,
+      "emotion": "calm",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "n4",
+      "duration_s": 7.0,
+      "activities": [
+        "ramen chef cooking"
+      ],
+      "objects": [
+        "ramen",
+        "kitchen"
+      ],
+      "scene_type": "restaurant",
+      "shot_type": "medium",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.2,
+      "energy_score": 4.6,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.7
+        },
+        {
+          "role": "b_roll",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "n5",
+      "duration_s": 8.0,
+      "activities": [
+        "skyline from rooftop"
+      ],
+      "objects": [
+        "skyline"
+      ],
+      "scene_type": "rooftop",
+      "shot_type": "extreme_wide",
+      "camera_motion": "pan",
+      "lighting": "good",
+      "quality_score": 9.3,
+      "energy_score": 4.0,
+      "emotion": "dramatic",
+      "story_roles": [
+        {
+          "role": "hero",
+          "confidence": 0.8
+        },
+        {
+          "role": "payoff",
+          "confidence": 0.7
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "cinematic_montage",
+      "travel"
+    ],
+    "genre": "travel",
+    "pace": "slow",
+    "emotion": "calm",
+    "emotional_arc": {
+      "shape": "build_release",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "n5",
+      "n2"
+    ],
+    "must_exclude": [],
+    "duration_s": null,
+    "min_judge_score": 6.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

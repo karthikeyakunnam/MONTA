@@ -1,0 +1,175 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "cinematic_trailer_style",
+  "category": "cinematic",
+  "description": "Movie-trailer style montage of a motorbike trip.",
+  "prompt": "make it like a movie trailer, epic, dramatic, 30 seconds",
+  "platform": "instagram",
+  "clips": [
+    {
+      "clip_id": "b1",
+      "duration_s": 8.0,
+      "activities": [
+        "motorbike engine starting"
+      ],
+      "objects": [
+        "motorbike"
+      ],
+      "scene_type": "garage",
+      "shot_type": "close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.4,
+      "energy_score": 4.2,
+      "emotion": "dramatic",
+      "story_roles": [
+        {
+          "role": "establishing",
+          "confidence": 0.7
+        },
+        {
+          "role": "detail",
+          "confidence": 0.7
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "b2",
+      "duration_s": 9.0,
+      "activities": [
+        "riding mountain road"
+      ],
+      "objects": [
+        "motorbike",
+        "mountain"
+      ],
+      "scene_type": "mountain road",
+      "shot_type": "wide",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.8,
+      "energy_score": 6.6,
+      "emotion": "dramatic",
+      "story_roles": [
+        {
+          "role": "progress",
+          "confidence": 0.85
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "b3",
+      "duration_s": 7.0,
+      "activities": [
+        "drone shot over pass"
+      ],
+      "objects": [
+        "mountain"
+      ],
+      "scene_type": "mountain",
+      "shot_type": "extreme_wide",
+      "camera_motion": "dynamic",
+      "lighting": "good",
+      "quality_score": 9.3,
+      "energy_score": 7.2,
+      "emotion": "inspiring",
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.6
+        },
+        {
+          "role": "peak",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "b4",
+      "duration_s": 6.0,
+      "activities": [
+        "sliding through corner"
+      ],
+      "objects": [
+        "motorbike"
+      ],
+      "scene_type": "mountain road",
+      "shot_type": "medium",
+      "camera_motion": "dynamic",
+      "lighting": "good",
+      "quality_score": 8.9,
+      "energy_score": 8.9,
+      "emotion": "intense",
+      "story_roles": [
+        {
+          "role": "peak",
+          "confidence": 0.9
+        },
+        {
+          "role": "intensity",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "b5",
+      "duration_s": 8.0,
+      "activities": [
+        "rider removing helmet at summit"
+      ],
+      "objects": [
+        "helmet"
+      ],
+      "scene_type": "summit",
+      "shot_type": "medium",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.1,
+      "energy_score": 5.0,
+      "emotion": "inspiring",
+      "story_roles": [
+        {
+          "role": "hero",
+          "confidence": 0.85
+        },
+        {
+          "role": "payoff",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "cinematic_montage",
+      "transformation"
+    ],
+    "genre": "cinematic",
+    "pace": "fast",
+    "emotion": "dramatic",
+    "emotional_arc": {
+      "shape": "build",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "b5",
+      "b4"
+    ],
+    "must_exclude": [],
+    "duration_s": 30.0,
+    "min_judge_score": 6.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

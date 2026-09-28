@@ -1,0 +1,170 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "cinematic_a24_mood",
+  "category": "cinematic",
+  "description": "A24-style mood piece: slow, dramatic, image-led.",
+  "prompt": "a24 style short film, dramatic and slow, dark",
+  "platform": "instagram",
+  "clips": [
+    {
+      "clip_id": "m1",
+      "duration_s": 10.0,
+      "activities": [
+        "fog over empty field"
+      ],
+      "objects": [
+        "field",
+        "fog"
+      ],
+      "scene_type": "countryside",
+      "shot_type": "extreme_wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.0,
+      "energy_score": 2.2,
+      "emotion": "dramatic",
+      "story_roles": [
+        {
+          "role": "establishing",
+          "confidence": 0.9
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "m2",
+      "duration_s": 9.0,
+      "activities": [
+        "hand touching old photograph"
+      ],
+      "objects": [
+        "photograph"
+      ],
+      "scene_type": "interior",
+      "shot_type": "extreme_close_up",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.8,
+      "energy_score": 2.4,
+      "emotion": "emotional",
+      "story_roles": [
+        {
+          "role": "detail",
+          "confidence": 0.9
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "m3",
+      "duration_s": 8.0,
+      "activities": [
+        "person running through forest"
+      ],
+      "objects": [
+        "forest"
+      ],
+      "scene_type": "forest",
+      "shot_type": "medium",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.6,
+      "energy_score": 6.8,
+      "emotion": "intense",
+      "story_roles": [
+        {
+          "role": "intensity",
+          "confidence": 0.8
+        },
+        {
+          "role": "progress",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "m4",
+      "duration_s": 7.0,
+      "activities": [
+        "storm clouds rolling"
+      ],
+      "objects": [
+        "clouds"
+      ],
+      "scene_type": "sky",
+      "shot_type": "extreme_wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.2,
+      "energy_score": 5.8,
+      "emotion": "dramatic",
+      "story_roles": [
+        {
+          "role": "peak",
+          "confidence": 0.75
+        },
+        {
+          "role": "hero",
+          "confidence": 0.7
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "m5",
+      "duration_s": 10.0,
+      "activities": [
+        "figure standing on cliff at dusk"
+      ],
+      "objects": [
+        "cliff"
+      ],
+      "scene_type": "coast",
+      "shot_type": "wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 9.4,
+      "energy_score": 3.6,
+      "emotion": "emotional",
+      "story_roles": [
+        {
+          "role": "payoff",
+          "confidence": 0.9
+        },
+        {
+          "role": "hero",
+          "confidence": 0.6
+        }
+      ],
+      "usable": true,
+      "note": ""
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "cinematic_montage"
+    ],
+    "genre": "cinematic",
+    "pace": "slow",
+    "emotion": "dramatic",
+    "emotional_arc": {
+      "shape": "build_release",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "m4",
+      "m5"
+    ],
+    "must_exclude": [],
+    "duration_s": null,
+    "min_judge_score": 6.0
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

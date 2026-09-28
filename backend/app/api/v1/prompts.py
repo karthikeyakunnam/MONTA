@@ -1,50 +1,43 @@
 """
 MONTA API — Prompt Endpoints
 ==============================
-Layer 3: Prompt Intelligence Engine — Process natural language editing prompts.
+Layer 3: Prompt Intelligence Engine — interpret free-form editing requests.
+
+Requires the repository root on PYTHONPATH (``services`` and ``shared`` are
+top-level packages; the Docker images copy them alongside ``backend``).
 """
 
-from fastapi import APIRouter
-from pydantic import BaseModel
+from functools import lru_cache
+
+from fastapi import APIRouter, Depends
+
+from app.schemas.prompt import PromptAnalysisRequest, PromptAnalysisResponse
+from services.prompt_engine import IntentEngine
+from shared.providers.registry import build_providers
 
 router = APIRouter()
 
 
-class PromptRequest(BaseModel):
-    """User's natural language editing prompt."""
-    prompt: str
-    project_id: str
-    target_platform: str = "instagram"
+@lru_cache(maxsize=1)
+def get_intent_engine() -> IntentEngine:
+    """Process-wide engine; providers hold pooled HTTP clients and must be shared."""
+    return IntentEngine(build_providers().text)
 
 
-@router.post("/analyze")
-async def analyze_prompt(request: PromptRequest):
+@router.post("/analyze", response_model=PromptAnalysisResponse)
+async def analyze_prompt(request: PromptAnalysisRequest, engine: IntentEngine = Depends(get_intent_engine)):
     """
-    Parse a natural language prompt into structured editing intent.
-    
+    Interpret a natural-language editing request. Any phrasing is accepted —
+    slang, typos and fragments included.
+
     Example input:
-        "make this feel like a dark cinematic transformation story,
-         slow beginning, emotional middle, aggressive ending,
-         orange-teal grade, dramatic bass music"
-    
-    Example output:
-        {
-            "genre": "transformation",
-            "pacing": "dynamic",
-            "color": "orange_teal",
-            "emotion": "motivational",
-            "target": "instagram"
-        }
+        "make this feel like nike ad slow start then huge motivation ending
+         use dark colors and aggressive cuts"
+
+    The response carries every field with value, confidence, reasoning and
+    evidence, plus detected ambiguities, conflicts and missing information
+    (with clarifying questions the UI may surface).
     """
-    # TODO: Send to prompt intelligence engine
-    # TODO: Use LLM to parse intent
-    return {
-        "status": "analyzed",
-        "intent": {
-            "genre": "placeholder",
-            "pacing": "dynamic",
-            "color": "default",
-            "emotion": "neutral",
-            "target": request.target_platform,
-        }
-    }
+    intent = await engine.analyze(request.prompt)
+    return PromptAnalysisResponse(project_id=request.project_id, intent=intent,
+                                  needs_clarification=intent.needs_clarification)

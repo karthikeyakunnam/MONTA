@@ -1,0 +1,203 @@
+{
+  "schema_version": "golden.v1",
+  "project_id": "event_festival_aftermovie",
+  "category": "event",
+  "description": "Music festival aftermovie: anticipation, crowd, the drop, afterglow.",
+  "prompt": "festival aftermovie, energetic, hype, 30 sec",
+  "platform": "instagram",
+  "clips": [
+    {
+      "clip_id": "e1",
+      "duration_s": 8.0,
+      "activities": [
+        "crowd gathering at gates"
+      ],
+      "objects": [
+        "crowd",
+        "stage"
+      ],
+      "scene_type": "festival",
+      "shot_type": "wide",
+      "camera_motion": "static",
+      "lighting": "good",
+      "quality_score": 8.0,
+      "energy_score": 4.2,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "establishing",
+          "confidence": 0.85
+        },
+        {
+          "role": "preparation",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "e2",
+      "duration_s": 7.0,
+      "activities": [
+        "friends painting faces"
+      ],
+      "objects": [
+        "face paint"
+      ],
+      "scene_type": "festival",
+      "shot_type": "close_up",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.2,
+      "energy_score": 5.0,
+      "emotion": "joyful",
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.8
+        },
+        {
+          "role": "detail",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "e3",
+      "duration_s": 8.0,
+      "activities": [
+        "crowd jumping"
+      ],
+      "objects": [
+        "crowd"
+      ],
+      "scene_type": "festival",
+      "shot_type": "wide",
+      "camera_motion": "handheld",
+      "lighting": "good",
+      "quality_score": 8.4,
+      "energy_score": 7.8,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "reaction",
+          "confidence": 0.8
+        },
+        {
+          "role": "progress",
+          "confidence": 0.5
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "e4",
+      "duration_s": 6.0,
+      "activities": [
+        "pyrotechnics at the drop"
+      ],
+      "objects": [
+        "stage",
+        "fireworks"
+      ],
+      "scene_type": "festival",
+      "shot_type": "wide",
+      "camera_motion": "dynamic",
+      "lighting": "good",
+      "quality_score": 9.1,
+      "energy_score": 9.4,
+      "emotion": "energetic",
+      "story_roles": [
+        {
+          "role": "peak",
+          "confidence": 0.9
+        },
+        {
+          "role": "hero",
+          "confidence": 0.8
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "e5",
+      "duration_s": 7.0,
+      "activities": [
+        "walking out at sunrise"
+      ],
+      "objects": [
+        "field"
+      ],
+      "scene_type": "festival",
+      "shot_type": "wide",
+      "camera_motion": "tracking",
+      "lighting": "good",
+      "quality_score": 8.6,
+      "energy_score": 3.6,
+      "emotion": "nostalgic",
+      "story_roles": [
+        {
+          "role": "payoff",
+          "confidence": 0.8
+        },
+        {
+          "role": "reaction",
+          "confidence": 0.4
+        }
+      ],
+      "usable": true,
+      "note": ""
+    },
+    {
+      "clip_id": "e6",
+      "duration_s": 5.0,
+      "activities": [
+        "dark blurry night footage"
+      ],
+      "objects": [],
+      "scene_type": "unknown",
+      "shot_type": "unknown",
+      "camera_motion": "shaky",
+      "lighting": "good",
+      "quality_score": 2.5,
+      "energy_score": 3.0,
+      "emotion": null,
+      "story_roles": [
+        {
+          "role": "b_roll",
+          "confidence": 0.2
+        }
+      ],
+      "usable": true,
+      "note": "unusable low light"
+    }
+  ],
+  "expected": {
+    "story_patterns": [
+      "event"
+    ],
+    "genre": "event",
+    "pace": "fast",
+    "emotion": "energetic",
+    "emotional_arc": {
+      "shape": "build_release",
+      "start_pace": null,
+      "end_emotion": null
+    },
+    "hero_clip_ids": [
+      "e4"
+    ],
+    "must_exclude": [
+      "e6"
+    ],
+    "duration_s": 30.0,
+    "min_judge_score": 6.5
+  },
+  "labeled_by": "monta-editorial (v1 expert labels)",
+  "version": 1
+}

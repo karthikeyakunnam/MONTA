@@ -1,0 +1,83 @@
+{
+  "report_version": "benchmark.v1",
+  "created_at": "2026-09-22T06:14:46.388600Z",
+  "git_sha": "153a511-dirty",
+  "algorithm_versions": {
+    "architect": "architect.v2",
+    "judge": "judge.v1",
+    "lexicon": "lexicon.v1",
+    "signals": "signals.v1",
+    "fusion": "fusion.v1"
+  },
+  "dataset": {
+    "dataset": "golden_projects",
+    "files": 14,
+    "sha256": "6115d2ed78bbb5f901662c056a9dcfec5c2b097bc6e2c9811bce26c3729d45cf"
+  },
+  "variants": [
+    {
+      "variant": "current",
+      "description": "working tree, deterministic, no model calls",
+      "projects": 14,
+      "story_quality": 7.685,
+      "prompt_alignment": 8.5921,
+      "narrative_score": 6.585,
+      "golden_pass_rate": 0.7143,
+      "validity_rate": 0.9286,
+      "check_pass_rates": {
+        "arc_shape": 0.9286,
+        "duration": 1.0,
+        "emotion": 1.0,
+        "end_emotion": 1.0,
+        "exclusions": 1.0,
+        "genre": 0.8571,
+        "hero": 1.0,
+        "judge": 1.0,
+        "pace": 0.9286,
+        "pattern": 1.0,
+        "start_pace": 1.0,
+        "valid": 0.9286
+      },
+      "category_pass_rates": {
+        "cinematic": 0.0,
+        "event": 1.0,
+        "gym": 1.0,
+        "podcast": 1.0,
+        "product_launch": 1.0,
+        "travel": 0.5,
+        "wedding": 0.5
+      },
+      "judge_dimensions": {
+        "overall": 7.685,
+        "coherence": 6.585,
+        "emotion": 6.871,
+        "pacing": 9.697,
+        "hook": 8.135,
+        "ending": 6.298,
+        "prompt_alignment": 8.592,
+        "clip_relevance": 7.714
+      },
+      "runtime_p50_s": 0.0058,
+      "runtime_p95_s": 0.0114,
+      "tokens": {},
+      "cost_usd": 0.0,
+      "cost_note": "no model calls",
+      "failures": {
+        "cinematic_a24_mood": [
+          "valid: 1 error(s) across 1 rule(s): no_abrupt_energy_spikes"
+        ],
+        "cinematic_trailer_style": [
+          "genre: travel vs cinematic",
+          "arc_shape: build: energy/position r=-0.37, peak at 43%"
+        ],
+        "travel_tokyo_night": [
+          "genre: cinematic vs travel"
+        ],
+        "wedding_romantic_film": [
+          "pace: medium vs slow"
+        ]
+      }
+    }
+  ],
+  "comparisons": []
+}
