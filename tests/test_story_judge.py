@@ -87,3 +87,42 @@ async def test_composite_survives_a_failing_llm_judge():
     failing = LLMStoryJudge(ScriptedProvider([ProviderUnavailableError("down")], vision=False))
     c = await CompositeStoryJudge([(HeuristicStoryJudge(), 0.5), (failing, 0.5)]).judge(plan, pack)
     assert c.components == (HeuristicStoryJudge.judge_id,)
+
+
+def test_human_evaluation_agreement():
+    from evaluation.story_judge.agreement import HumanRating, agreement
+    from shared.contracts.evaluation import StoryJudgement, DimensionScore
+
+    judgements = [
+        StoryJudgement(
+            judge_id="test_judge",
+            plan_pattern="fitness_reel",
+            overall_score=float(i) / 4.0,
+            coherence_score=float(i) / 4.0,
+            emotion_score=float(i) / 4.0,
+            pacing_score=float(i) / 4.0,
+            hook_score=float(i) / 4.0,
+            ending_score=float(i) / 4.0,
+            prompt_alignment_score=float(i) / 4.0,
+            clip_relevance_score=float(i) / 4.0,
+            confidence=0.9,
+            rationale={d: DimensionScore(score=float(i) / 4.0, rationale="test rationale") for d in JUDGE_DIMENSIONS},
+            valid_plan=True,
+        )
+        for i in range(35)
+    ]
+    human_ratings = [
+        HumanRating(
+            plan_id=f"plan_{i}",
+            overall=float(i) / 4.0 + 0.01 * (i % 2),
+            dimensions={d: float(i) / 4.0 for d in JUDGE_DIMENSIONS},
+            raters=2,
+        )
+        for i in range(35)
+    ]
+    pairs = list(zip(judgements, human_ratings))
+    result = agreement("test_judge", pairs)
+    assert result.n == 35
+    assert result.trusted is True
+    assert result.spearman_overall is not None and result.spearman_overall > 0.9
+    assert result.pairwise_accuracy is not None and result.pairwise_accuracy > 0.9
