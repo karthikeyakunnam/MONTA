@@ -8,6 +8,7 @@ graceful CPU fallback, and post-render validation.
 
 import asyncio
 import logging
+from dataclasses import replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -74,6 +75,7 @@ class MediaRenderer:
         # Step 3: Execute render with automatic fallback
         render_time = 0.0
         used_encoder = cmd.encoder_used
+        executed_cmd = cmd
 
         try:
             render_time = await self.executor.execute(cmd, on_progress=exec_progress)
@@ -89,6 +91,7 @@ class MediaRenderer:
                     on_progress(10.0, 0.0, "cpu_fallback")
                 fallback_cmd = self.compiler.compile(timeline, output_path=output_path, force_cpu=True)
                 used_encoder = fallback_cmd.encoder_used
+                executed_cmd = fallback_cmd
                 render_time = await self.executor.execute(fallback_cmd, on_progress=exec_progress)
             else:
                 raise
@@ -102,6 +105,15 @@ class MediaRenderer:
             render_time_s=render_time,
             encoder_used=used_encoder,
         )
+        result = replace(result, execution_plan={
+            "argv": list(executed_cmd.argv),
+            "input_files": list(executed_cmd.input_files),
+            "output_path": executed_cmd.output_path,
+            "expected_duration_s": executed_cmd.expected_duration_s,
+            "filter_graph": executed_cmd.filter_graph,
+            "encoder_used": used_encoder,
+            "used_cpu_fallback": used_encoder != cmd.encoder_used,
+        })
 
         if on_progress:
             on_progress(100.0, render_time, "complete" if result.success else "failed")

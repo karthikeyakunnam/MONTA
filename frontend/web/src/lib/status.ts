@@ -17,6 +17,7 @@ export const STAGES: Stage[] = [
   'validating',
   'analyzing',
   'story_building',
+  'timeline_building',
   'rendering',
   'complete',
 ];
@@ -26,6 +27,7 @@ export const STAGE_LABELS: Record<Stage, string> = {
   validating: 'Validating',
   analyzing: 'Analyzing',
   story_building: 'Story building',
+  timeline_building: 'Timeline building',
   rendering: 'Rendering',
   complete: 'Complete',
   failed: 'Failed',

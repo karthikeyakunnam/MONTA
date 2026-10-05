@@ -48,8 +48,8 @@ def test_model_registry_selection():
         cpu_arch="x86_64",
         cpu_cores_physical=4,
         cpu_cores_logical=8,
-        total_ram_gb=8.0,
-        available_ram_gb=4.0,
+        total_ram_gb=16.0,
+        available_ram_gb=8.0,
         vram_gb=0.0,
         recommended_model_size="3b",
     )
@@ -60,6 +60,70 @@ def test_model_registry_selection():
     # Vision model selection
     best_vis = ModelRegistry.select_best_model("vision", hw_low, ["qwen2.5:7b", "qwen2-vl:7b"])
     assert best_vis == "qwen2-vl:7b"
+
+
+def _hardware(*, available_ram_gb: float, recommended_size: str = "3b") -> HardwareProfile:
+    return HardwareProfile(
+        device_type=DeviceType.CPU_ONLY,
+        os_name="linux",
+        cpu_arch="x86_64",
+        cpu_cores_physical=4,
+        cpu_cores_logical=8,
+        total_ram_gb=max(available_ram_gb * 2, 8.0),
+        available_ram_gb=available_ram_gb,
+        vram_gb=0.0,
+        recommended_model_size=recommended_size,
+    )
+
+
+def test_model_registry_prefers_exact_requested_size_over_larger_same_family():
+    selected = ModelRegistry.select_best_model(
+        "text", _hardware(available_ram_gb=16.0), ["qwen2.5:7b", "qwen2.5:3b"]
+    )
+    assert selected == "qwen2.5:3b"
+
+
+def test_model_registry_uses_documented_same_family_fallback_when_exact_size_absent():
+    # 7B is the only Qwen 2.5 text model installed and it fits this host.
+    selected = ModelRegistry.select_best_model(
+        "text", _hardware(available_ram_gb=16.0), ["qwen2.5:7b"]
+    )
+    assert selected == "qwen2.5:7b"
+
+
+def test_model_registry_selection_is_deterministic_across_repeated_calls():
+    installed = ["qwen2.5:14b", "qwen2.5:7b", "qwen2.5:3b"]
+    selections = {
+        ModelRegistry.select_best_model("text", _hardware(available_ram_gb=40.0), installed)
+        for _ in range(100)
+    }
+    assert selections == {"qwen2.5:3b"}
+
+
+def test_model_registry_keeps_vision_and_text_roles_separate():
+    hardware = _hardware(available_ram_gb=16.0, recommended_size="7b")
+    installed = ["qwen2.5:7b", "qwen2-vl:7b"]
+
+    assert ModelRegistry.select_best_model("vision", hardware, installed) == "qwen2-vl:7b"
+    assert ModelRegistry.select_best_model("text", hardware, installed) == "qwen2.5:7b"
+
+
+def test_model_registry_respects_hardware_memory_budget():
+    # 3B fits the 3.2 GB CPU memory budget while 7B does not.
+    selected = ModelRegistry.select_best_model(
+        "text", _hardware(available_ram_gb=4.0), ["qwen2.5:7b", "qwen2.5:3b"]
+    )
+    assert selected == "qwen2.5:3b"
+
+    with pytest.raises(ValueError, match="fits the local memory budget"):
+        ModelRegistry.select_best_model("text", _hardware(available_ram_gb=4.0), ["qwen2.5:7b"])
+
+
+def test_offline_registry_rejects_cloud_provider_before_selection():
+    from shared.providers.registry import ProviderSettings, build_providers
+
+    with pytest.raises(ValueError, match="cloud service"):
+        build_providers(ProviderSettings(monta_offline_mode=True, monta_text_providers="gemini"))
 
 
 @pytest.mark.asyncio

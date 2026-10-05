@@ -45,7 +45,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
     from sqlalchemy import select
     from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-    from app.models import Clip, ClipStatus, Job, JobState, Project, ProjectStatus
+    from app.models import Clip, ClipStatus, Job, JobState, Project, ProjectStatus, Timeline
     from app.services.progress import ProgressEvent, Stage, publish_sync
     from orchestration.pipeline import build_pipeline
     from shared.contracts.clip import ClipSource
@@ -116,9 +116,9 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 job = await db.get(Job, job_id)
                 intent = result.intent.model_dump(mode="json")
                 project.parsed_intent = intent
-                project.context = {"platform": result.context_pack.platform.platform.value,
-                                   "clips": len(result.context_pack.clip_intelligence),
-                                   "degraded_sources": list(result.context_pack.degraded_sources)}
+                # Keep the complete ContextPack, including real source metadata and
+                # intelligence provenance, as the first inspectable M3 artifact.
+                project.context = result.context_pack.model_dump(mode="json")
                 for clip_id, intelligence in result.context_pack.clip_intelligence.items():
                     clip = await db.get(Clip, clip_id)
                     if clip is None:
@@ -150,31 +150,129 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 judgement = await pipeline.judge_story(result.story, result.context_pack)
                 project.story_plan = story
                 project.story_judgement = judgement.model_dump(mode="json")
+
+                # --- M3 End-to-End Rendering Step ---
+                publish(Stage.TIMELINE_BUILDING, "Generating timeline and compiling execution plan")
+                timeline_ir = pipeline.generate_timeline_ir(result.story, result.context_pack)
+                existing_timeline = (await db.execute(
+                    select(Timeline).where(Timeline.project_id == project_id)
+                )).scalar_one_or_none()
+                timeline_row = existing_timeline or Timeline(id=f"timeline_{job_id}", project_id=project_id)
+                timeline_row.story_acts = {"assignments": result.story.act_assignments, "hero_clip_id": result.story.hero_clip_id}
+                timeline_row.style_config = {
+                    "pace": result.story.pace.value.value,
+                    "emotion": result.story.emotion.value.value,
+                    "timeline_validation": {"is_valid": True, "errors": [], "warnings": []},
+                }
+                timeline_row.entries = timeline_ir.model_dump(mode="json")
+                timeline_row.total_duration = timeline_ir.duration_s
+                if existing_timeline is None:
+                    db.add(timeline_row)
+
+                # A real timeline is now persisted even if the later FFmpeg step
+                # fails, so an operator can identify the failed layer.
+                project.status = ProjectStatus.RENDERING.value
+                project.status_detail = "timeline validated; preparing FFmpeg render"
+                if job is not None:
+                    job.stage = Stage.TIMELINE_BUILDING.value
+                await db.commit()
+
+                publish(Stage.RENDERING, "Rendering final media output with FFmpeg")
+                
+                render_dir = settings.storage_root_path / "renders" / project_id
+                render_dir.mkdir(parents=True, exist_ok=True)
+                render_file = render_dir / f"final_{job_id}.mp4"
+
+                def on_render_progress(pct: float, elapsed: float, stage_name: str):
+                    publish(Stage.RENDERING, f"Rendering video: {pct:.0f}%", percent=pct, detail={"stage": stage_name, "elapsed_s": elapsed})
+
+                render_result = await pipeline.render_story(
+                    story=result.story,
+                    pack=result.context_pack,
+                    output_path=str(render_file),
+                    on_progress=on_render_progress,
+                    timeline=timeline_ir,
+                )
+
+                if not render_result.success:
+                    raise RuntimeError(f"Rendering failed: {render_result.error_message}")
+
+                timeline_row.style_config = {
+                    **(timeline_row.style_config or {}),
+                    "compiled_execution_plan": render_result.execution_plan,
+                    "render_metadata": {
+                        "output_path": render_result.output_path,
+                        "duration_s": render_result.duration_s,
+                        "width": render_result.width,
+                        "height": render_result.height,
+                        "fps": render_result.fps,
+                        "video_codec": render_result.video_codec,
+                        "audio_codec": render_result.audio_codec,
+                        "encoder": render_result.encoder_used,
+                        "file_size_bytes": render_result.file_size_bytes,
+                        "validation_passed": render_result.validation_passed,
+                        "warnings": list(render_result.warnings),
+                    },
+                }
+
+                # Persist Render row
+                from app.models.render import Render, RenderStatus
+                from uuid import uuid4
+
+                render_id = str(uuid4())
+                render_row = Render(
+                    id=render_id,
+                    project_id=project_id,
+                    status=RenderStatus.COMPLETE.value,
+                    resolution=f"{render_result.width}x{render_result.height}",
+                    format="mp4",
+                    output_path=str(render_file),
+                    file_size_bytes=float(render_result.file_size_bytes),
+                    duration=float(render_result.duration_s),
+                    progress_percent=100.0,
+                    started_at=job.started_at if job else None,
+                    completed_at=datetime.now(timezone.utc),
+                )
+                db.add(render_row)
+
                 project.status = ProjectStatus.COMPLETE.value
-                project.status_detail = (f"story ready: {result.story.story_pattern}, "
-                                         f"{len(result.story.timeline)} cuts, {result.story.total_duration_s:.1f}s")
+                project.status_detail = (f"video ready: {render_result.duration_s:.1f}s, "
+                                         f"{render_result.width}x{render_result.height}, {render_result.file_size_mb}MB")
                 if job is not None:
                     job.state = JobState.SUCCEEDED.value
                     job.stage = Stage.COMPLETE.value
                     job.finished_at = datetime.now(timezone.utc)
                     job.result = {"story_pattern": result.story.story_pattern,
                                   "cuts": len(result.story.timeline),
-                                  "duration_s": result.story.total_duration_s,
+                                  "duration_s": render_result.duration_s,
+                                  "render_id": render_id,
+                                  "output_path": str(render_file),
                                   "judge_score": judgement.overall_score,
-                                  "degraded_tasks": failures}
+                                  "degraded_tasks": failures,
+                                  "artifacts": {
+                                      "context_pack": "projects.context",
+                                      "story_plan": "projects.story_plan",
+                                      "timeline_ir": "timelines.entries",
+                                      "compiled_execution_plan": "timelines.style_config.compiled_execution_plan",
+                                      "render_metadata": "timelines.style_config.render_metadata",
+                                      "final_mp4": str(render_file),
+                                  }}
                 await db.commit()
 
             publish(Stage.COMPLETE, project.status_detail,
                     percent=100.0,
                     detail={"story_pattern": result.story.story_pattern, "cuts": len(result.story.timeline),
-                            "duration_s": result.story.total_duration_s, "judge_score": judgement.overall_score,
-                            "validation_passed": result.story.validation.passed})
-            logger.info("pipeline complete", extra={"project_id": project_id, "job_id": job_id,
-                                                    "pattern": result.story.story_pattern})
+                                  "duration_s": render_result.duration_s, "render_id": render_id,
+                                  "output_path": str(render_file), "judge_score": judgement.overall_score,
+                                  "validation_passed": result.story.validation.passed})
+            logger.info("pipeline complete with rendered video", extra={"project_id": project_id, "job_id": job_id,
+                                                                        "output_path": str(render_file)})
             return {"project_id": project_id, "status": "complete", "story_pattern": result.story.story_pattern,
-                    "cuts": len(result.story.timeline), "judge_score": judgement.overall_score}
+                    "cuts": len(result.story.timeline), "render_id": render_id, "output_path": str(render_file),
+                    "duration_s": render_result.duration_s, "judge_score": judgement.overall_score}
     finally:
         await engine.dispose()
+
 
 
 def _storage_path(settings, storage_key: str):

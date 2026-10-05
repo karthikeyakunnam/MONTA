@@ -37,6 +37,9 @@ class RenderResult:
     validation_passed: bool
     warnings: tuple[str, ...] = ()
     error_message: str = ""
+    # Captures the exact structured plan submitted to FFmpeg for project-level
+    # traceability.  This is metadata, not a shell command to be re-executed.
+    execution_plan: dict = field(default_factory=dict)
 
     @property
     def file_size_mb(self) -> float:

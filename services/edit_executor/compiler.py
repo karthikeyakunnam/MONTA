@@ -130,13 +130,20 @@ class FFmpegCompiler:
             filters.append(f"{','.join(v_chain)}[{v_node}]")
             video_nodes.append(f"[{v_node}]")
 
-            # 2. Audio stream filters
-            a_chain = [f"[{in_idx}:a]atrim=start={start_s:.4f}:end={end_s:.4f}"]
-            a_chain.append("asetpts=PTS-STARTPTS")
-
-            # Audio speed (atempo handles 0.5 to 2.0; chain if needed)
-            if abs(seg.speed - 1.0) > 0.001:
-                a_chain.extend(self._build_atempo_filters(seg.speed))
+            # 2. Audio stream filters.  A silent source still receives an
+            # explicit generated audio segment so concat/xfade always has one
+            # audio stream and the final MP4 remains broadly playable.
+            if seg.has_audio:
+                a_chain = [f"[{in_idx}:a]atrim=start={start_s:.4f}:end={end_s:.4f}"]
+                a_chain.append("asetpts=PTS-STARTPTS")
+                if abs(seg.speed - 1.0) > 0.001:
+                    a_chain.extend(self._build_atempo_filters(seg.speed))
+            else:
+                a_chain = [
+                    "anullsrc=channel_layout=stereo:sample_rate=48000",
+                    f"atrim=duration={seg.timeline_duration_ms / 1000.0:.4f}",
+                    "asetpts=PTS-STARTPTS",
+                ]
 
             # Audio volume
             if abs(seg.volume - 1.0) > 0.001:

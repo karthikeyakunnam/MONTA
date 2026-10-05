@@ -7,6 +7,7 @@ Centralized settings loaded from environment variables.
 from pathlib import Path
 from typing import List
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 #: Repository root: backend/app/config.py -> backend/app -> backend -> <root>
@@ -21,6 +22,23 @@ class Settings(BaseSettings):
     APP_NAME: str = "monta"
     SECRET_KEY: str = "change-me-in-production"
     DEBUG: bool = True
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def _parse_debug_environment(cls, value):
+        """Tolerate common process-level DEBUG values without breaking startup.
+
+        Deployment shells often set ``DEBUG=release``/``production`` for tools
+        unrelated to MONTA.  Treat those as a normal false value instead of
+        preventing every API or test process from importing its settings.
+        """
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"release", "production", "prod", "off"}:
+                return False
+            if normalized in {"development", "dev", "debug", "on"}:
+                return True
+        return value
 
     # CORS
     CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:8000"]

@@ -18,7 +18,7 @@ const USER_ID = process.env.NEXT_PUBLIC_MONTA_USER ?? 'local';
 export type ProjectStatus =
   | 'draft' | 'uploading' | 'queued' | 'analyzing' | 'story_building' | 'rendering' | 'complete' | 'failed';
 export type ClipStatus = 'uploaded' | 'analyzing' | 'analyzed' | 'rejected' | 'failed';
-export type Stage = 'uploaded' | 'validating' | 'analyzing' | 'story_building' | 'rendering' | 'complete' | 'failed';
+export type Stage = 'uploaded' | 'validating' | 'analyzing' | 'story_building' | 'timeline_building' | 'rendering' | 'complete' | 'failed';
 
 export interface ValidationIssue {
   code: string;

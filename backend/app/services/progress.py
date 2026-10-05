@@ -32,6 +32,7 @@ class Stage(StrEnum):
     VALIDATING = "validating"
     ANALYZING = "analyzing"
     STORY_BUILDING = "story_building"
+    TIMELINE_BUILDING = "timeline_building"
     RENDERING = "rendering"
     COMPLETE = "complete"
     FAILED = "failed"

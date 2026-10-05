@@ -63,6 +63,7 @@ class VideoSegmentIR(BaseModel):
     timeline_start_ms: TimeMs
     timeline_end_ms: TimeMs
     speed: float = Field(1.0, gt=0.1, le=10.0, description="Playback speed multiplier (1.0 = normal)")
+    has_audio: bool = True
     volume: float = Field(1.0, ge=0.0, le=4.0, description="Audio volume multiplier for clip audio (0.0 = muted)")
     fade_in_ms: TimeMs = 0
     fade_out_ms: TimeMs = 0
@@ -155,4 +156,3 @@ class TimelineIR(BaseModel):
 
 
 TimelineSegmentIR = VideoSegmentIR
-

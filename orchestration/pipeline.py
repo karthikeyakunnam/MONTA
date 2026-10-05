@@ -43,6 +43,7 @@ from shared.contracts.director import ExecutionPlan, ExecutionReport, TaskSpec, 
 from shared.contracts.evaluation import StoryJudgement
 from shared.contracts.intent import IntentAnalysis
 from shared.contracts.story import StoryPlan, ValidationReport
+from shared.contracts.timeline import TimelineIR
 from shared.exceptions import PipelineError
 from shared.observability import catalog as m
 from shared.observability.context import bind, new_trace
@@ -83,6 +84,7 @@ class MontaPipeline:
         max_concurrency: int = 8,
         probe_concurrency: int = 8,
         on_event: EventSink | None = None,
+        require_local_ai: bool = False,
     ):
         self.intent_engine = intent_engine
         self.composer = composer
@@ -91,6 +93,7 @@ class MontaPipeline:
         self.architect = architect
         self.validator = validator
         self.judge = judge or HeuristicStoryJudge()
+        self.require_local_ai = require_local_ai
         self._probe_sem = asyncio.Semaphore(probe_concurrency)
         planner = DirectorPlanner(vision_enabled=team.vision is not None, refiner_enabled=architect.refiner is not None,
                                   max_parallel_clips=max_concurrency)
@@ -127,7 +130,16 @@ class MontaPipeline:
     # ------------------------------------------------------------------ stages
 
     async def interpret(self, prompt: str) -> IntentAnalysis:
-        return await self.intent_engine.analyze(prompt)
+        intent = await self.intent_engine.analyze(prompt)
+        if self.require_local_ai:
+            failure = next((reason for reason in intent.degraded if reason.startswith("LLM extraction failed:")), None)
+            if failure:
+                raise PipelineError(
+                    "Configured local AI is required for this offline run but prompt inference failed: " + failure
+                )
+            if not any(extractor.startswith("llm:") for extractor in intent.extractors):
+                raise PipelineError("Configured local AI is required for this offline run but no LLM result was recorded")
+        return intent
 
     async def probe(self, clips: Sequence[ClipSource]) -> tuple[list[TechnicalMetadata], list[ProbeFailure]]:
         ids = [c.clip_id for c in clips]
@@ -208,6 +220,39 @@ class MontaPipeline:
         plan = await self.architect.design(pack, avoid_patterns=avoid_patterns)
         return plan, self.validator.validate_plan(plan, pack.clip_intelligence)
 
+    def generate_timeline_ir(
+        self,
+        story: StoryPlan,
+        pack: ContextPack,
+        style_override: dict | None = None,
+    ):
+        """Translate a StoryPlan and reject invalid Timeline IR before rendering."""
+        from services.timeline_generator.translator import StoryToTimelineTranslator
+        from services.edit_executor.validator import EditPlanValidator
+
+        timeline = StoryToTimelineTranslator.translate(story=story, pack=pack, style_override=style_override)
+        source_durations_ms = {meta.clip_id: round(meta.duration_s * 1000) for meta in pack.video_metadata}
+        validation = EditPlanValidator().validate(timeline, source_durations_ms=source_durations_ms)
+        validation.raise_if_invalid()
+        return timeline
+
+    async def render_story(
+        self,
+        story: StoryPlan,
+        pack: ContextPack,
+        output_path: str,
+        style_override: dict | None = None,
+        on_progress=None,
+        timeline: TimelineIR | None = None,
+    ):
+        """Compiles and executes FFmpeg render for a designed story plan."""
+        from services.render_farm.renderer import MediaRenderer
+
+        timeline = timeline or self.generate_timeline_ir(story, pack, style_override=style_override)
+        renderer = MediaRenderer()
+        return await renderer.render(timeline, output_path=output_path, on_progress=on_progress)
+
+
 
 # ---------------------------------------------------------------------------- wiring
 
@@ -287,4 +332,5 @@ def build_pipeline(
         judge=judge,
         max_concurrency=int(os.getenv("MONTA_MAX_PARALLEL_CLIPS", "8")),
         on_event=on_event,
+        require_local_ai=providers.is_offline and providers.text is not None,
     )
