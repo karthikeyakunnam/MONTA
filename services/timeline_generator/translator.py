@@ -35,6 +35,7 @@ class StoryToTimelineTranslator:
         pack: ContextPack,
         style_override: Optional[dict] = None,
         render_profile: Optional[RenderProfileIR] = None,
+        audio_segments: Optional[Sequence[AudioSegmentIR]] = None,
     ) -> TimelineIR:
         """Deterministically builds TimelineIR from story plan decisions and source media."""
         # 1. Determine Aspect Ratio and Resolution from target platform
@@ -55,13 +56,14 @@ class StoryToTimelineTranslator:
         for meta in pack.video_metadata:
             clip_paths[meta.clip_id] = meta.path
 
-        # 3. Determine Color Mood from intent / style.
-        color_adj = cls._resolve_color_adjustment(pack, style_override)
+        # 3. Resolve unified style from StyleMapper (Layer 8)
+        from services.style_engine.mapper import StyleMapper
+        resolved_style = StyleMapper.resolve_style_for_pack(pack, style_override)
 
-        # 4. Translate the *actual* ordered StoryPlan cuts.  TimelineSegment
-        # carries both an output interval and a source interval.  Keeping both
-        # lets a future Story Architect express a speed ramp without inventing a
-        # second StoryPlan shape: speed is source_duration / output_duration.
+        color_adj = StyleMapper.resolve_color_adjustment(resolved_style.get("color_grade"))
+        scale_mode = StyleMapper.resolve_scale_mode(resolved_style.get("scale_mode"))
+
+        # 4. Translate the *actual* ordered StoryPlan cuts.
         video_segments: list[TimelineSegmentIR] = []
         previous_end_ms = 0
 
@@ -74,9 +76,6 @@ class StoryToTimelineTranslator:
                 raise ValueError(f"Source file path for clip '{cut.clip_id}' not found in ContextPack")
             metadata = metadata_by_id[cut.clip_id]
 
-            # Convert the StoryPlan's explicit source and output ranges to
-            # integer milliseconds.  Do not rebuild timing from source ranges:
-            # that would silently discard a story-level pacing or speed decision.
             source_in_ms = int(round(cut.source_in * 1000))
             source_out_ms = int(round(cut.source_out * 1000))
             seg_start_ms = int(round(cut.start * 1000))
@@ -91,11 +90,7 @@ class StoryToTimelineTranslator:
             if source_duration_ms <= 0 or output_duration_ms <= 0:
                 raise ValueError(f"StoryPlan cut {cut.index} has an invalid source or output range")
 
-            # StoryPlan does not currently carry transition directives.  A cut is
-            # therefore the only truthful default; automatic crossfades would
-            # change the architect's requested duration.  Style callers can pass
-            # an explicit compatible transition later without a second plan type.
-            trans_type, trans_ms = cls._transition_for(style_override, i, output_duration_ms)
+            trans_type, trans_ms = cls._transition_for(resolved_style, i, output_duration_ms)
             fade_in_ms = 250 if i == 0 else 0
             fade_out_ms = 250 if i == len(story.timeline) - 1 else 0
 
@@ -132,8 +127,9 @@ class StoryToTimelineTranslator:
             height=height,
             fps=30.0,
             aspect_ratio=aspect_ratio,
-            scale_mode=ScaleMode.FIT,
+            scale_mode=scale_mode,
             video_segments=tuple(video_segments),
+            audio_segments=tuple(audio_segments or ()),
             render_profile=render_profile or RenderProfileIR(),
             total_duration_ms=total_duration_ms,
         )
@@ -144,26 +140,19 @@ class StoryToTimelineTranslator:
         pack: ContextPack,
         style_override: Optional[dict] = None,
     ) -> Optional[ColorAdjustment]:
-        style = style_override or {}
-        requested_grade = pack.intent.color_grade.value.value if pack.intent.color_grade else ""
-        color_theme = str(style.get("color_grade", requested_grade)).lower()
-        if "cinematic" in color_theme or "mood" in color_theme:
-            return ColorAdjustment(brightness=-0.02, contrast=1.12, saturation=1.08)
-        if "vibrant" in color_theme or "hype" in color_theme:
-            return ColorAdjustment(brightness=0.02, contrast=1.15, saturation=1.20)
-        return None
+        from services.style_engine.mapper import StyleMapper
+        resolved = StyleMapper.resolve_style_for_pack(pack, style_override)
+        return StyleMapper.resolve_color_adjustment(resolved.get("color_grade"))
 
     @staticmethod
     def _transition_for(style_override: Optional[dict], index: int, duration_ms: int) -> tuple[TransitionType, int]:
         """Map an explicit style directive; StoryPlan itself otherwise means cut."""
         if index == 0 or not style_override:
             return TransitionType.CUT, 0
-        raw = str(style_override.get("transition", "cut")).lower()
-        try:
-            transition = TransitionType(raw)
-        except ValueError as exc:
-            raise ValueError(f"Unsupported style transition '{raw}'") from exc
-        if transition == TransitionType.CUT:
-            return transition, 0
-        requested_ms = int(style_override.get("transition_ms", 250))
-        return transition, max(1, min(requested_ms, duration_ms // 3))
+        from services.style_engine.mapper import StyleMapper
+        raw = str(style_override.get("transitions", style_override.get("transition", "cut"))).lower()
+        trans_ms = int(style_override.get("transition_ms", 250))
+        trans_type, t_dur = StyleMapper.resolve_transition(raw, default_ms=trans_ms)
+        if trans_type == TransitionType.CUT:
+            return TransitionType.CUT, 0
+        return trans_type, max(1, min(t_dur, duration_ms // 3))

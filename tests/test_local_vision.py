@@ -142,3 +142,46 @@ async def test_video_intelligence_team_integration():
     assert list(ci.activities) == ["deadlift", "weightlifting"]
     assert ci.energy_score > 0
     assert ci.provenance.vision_model == "local_vision:scripted:test-model+scripted:test-model"
+
+
+@pytest.mark.live
+async def test_live_local_vision_with_moondream_and_qwen():
+    from io import BytesIO
+    from PIL import Image
+    from shared.local_runtime.adapters.ollama import OllamaRuntime
+    from shared.local_runtime.provider import LocalAIProvider
+
+    runtime = OllamaRuntime()
+    if not await runtime.is_available():
+        pytest.skip("Local Ollama runtime not available")
+
+    models = [m.name for m in await runtime.list_models()]
+    if not any("moondream" in m for m in models):
+        pytest.skip("moondream not installed in local Ollama")
+
+    text_model = (
+        "qwen2.5-coder:1.5b"
+        if any("qwen2.5-coder:1.5b" in m for m in models)
+        else ("qwen2.5:0.5b" if any("qwen2.5:0.5b" in m for m in models) else None)
+    )
+    if not text_model:
+        pytest.skip("No lightweight text model installed in local Ollama")
+
+    vlm = LocalAIProvider(runtime, "moondream:latest")
+    text = LocalAIProvider(runtime, text_model)
+    pipeline = LocalVisionPipeline(vlm_provider=vlm, text_provider=text)
+
+    # Generate a sample frame: green scene
+    buf = BytesIO()
+    img = Image.new("RGB", (256, 256), color=(34, 139, 34))
+    img.save(buf, format="JPEG")
+    frames = [ImagePart(data=buf.getvalue())]
+
+    meta = _meta("live_test")
+    obs = await pipeline.observe(meta, frames, [0.0])
+
+    assert isinstance(obs.energy_estimate, float)
+    assert len(obs.story_role_candidates) >= 1
+    assert obs.reasoning != ""
+    await runtime.aclose()
+

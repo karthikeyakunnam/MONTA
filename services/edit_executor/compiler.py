@@ -219,7 +219,10 @@ class FFmpegCompiler:
                 bg_start = bg_audio.source_in_ms / 1000.0
                 bg_dur = (bg_audio.timeline_end_ms - bg_audio.timeline_start_ms) / 1000.0
                 
-                bg_chain = [f"[{in_idx}:a]atrim=start={bg_start:.4f}:duration={bg_dur:.4f}"]
+                bg_chain = [f"[{in_idx}:a]"]
+                if bg_audio.loop:
+                    bg_chain.append("aloop=loop=-1:size=2e+09")
+                bg_chain.append(f"atrim=start={bg_start:.4f}:duration={bg_dur:.4f}")
                 bg_chain.append("asetpts=PTS-STARTPTS")
                 if abs(bg_audio.volume - 1.0) > 0.001:
                     bg_chain.append(f"volume={bg_audio.volume:.3f}")
@@ -228,13 +231,33 @@ class FFmpegCompiler:
                 if bg_audio.fade_out_ms > 0:
                     st = max(0.0, bg_dur - (bg_audio.fade_out_ms / 1000.0))
                     bg_chain.append(f"afade=t=out:st={st:.3f}:d={bg_audio.fade_out_ms / 1000.0:.3f}")
+                if bg_audio.timeline_start_ms > 0:
+                    delay_ms = bg_audio.timeline_start_ms
+                    bg_chain.append(f"adelay={delay_ms}|{delay_ms}")
                 bg_chain.append("aformat=sample_rates=48000:channel_layouts=stereo")
-                filters.append(f"{','.join(bg_chain)}[{bg_node}]")
-                ext_audio_nodes.append(f"[{bg_node}]")
+                
+                # Chain together the pre-processing filters for this background track
+                pre_filters = ",".join(bg_chain[1:])
+                filters.append(f"{bg_chain[0]}{pre_filters}[{bg_node}]")
+
+                # Speech-aware ducking: if ducking is enabled, compress the background
+                # audio using the video voice/dialogue stream as sidechain trigger
+                if bg_audio.ducking:
+                    duck_node = f"duck_a{k}"
+                    filters.append(
+                        f"[{bg_node}][{final_a}]sidechaincompress="
+                        f"threshold={bg_audio.duck_threshold}:"
+                        f"ratio={bg_audio.duck_ratio}:"
+                        f"attack={bg_audio.duck_attack_ms}:"
+                        f"release={bg_audio.duck_release_ms}[{duck_node}]"
+                    )
+                    ext_audio_nodes.append(f"[{duck_node}]")
+                else:
+                    ext_audio_nodes.append(f"[{bg_node}]")
 
             # Mix timeline audio with external background tracks
             all_a_nodes = f"[{final_a}]" + "".join(ext_audio_nodes)
-            filters.append(f"{all_a_nodes}amix=inputs={1 + len(ext_audio_nodes)}:duration=longest:dropout_transition=0[a_mixed]")
+            filters.append(f"{all_a_nodes}amix=inputs={1 + len(ext_audio_nodes)}:duration=first:dropout_transition=0[a_mixed]")
             final_out_a = "a_mixed"
 
         full_filtergraph = ";".join(filters)

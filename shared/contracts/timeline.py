@@ -104,6 +104,11 @@ class AudioSegmentIR(BaseModel):
     fade_in_ms: TimeMs = 0
     fade_out_ms: TimeMs = 0
     loop: bool = False
+    ducking: bool = False
+    duck_threshold: float = Field(0.08, ge=0.001, le=1.0, description="Sidechain detection threshold")
+    duck_ratio: float = Field(4.0, ge=1.0, le=20.0, description="Compression ratio when ducking")
+    duck_attack_ms: int = Field(50, ge=1, le=1000, description="Attack time in ms")
+    duck_release_ms: int = Field(300, ge=10, le=5000, description="Release time in ms")
 
 
 class RenderProfileIR(BaseModel):
