@@ -46,6 +46,54 @@ class LocalAIProvider(ModelProvider):
             caps.discard(Capability.VISION)
 
         self.capabilities = frozenset(caps)
+        self._resolved_model: str | None = None
+
+    @property
+    def model_id(self) -> str:
+        active = self._resolved_model or self.model
+        return f"{self.name}:{active}"
+
+    async def _get_model(self) -> str:
+        if self._resolved_model:
+            return self._resolved_model
+        if self.model and self.model != "auto":
+            try:
+                models = await self.runtime.list_models()
+                installed_names = [m.name for m in models]
+                if installed_names:
+                    has_exact = any(
+                        m == self.model or m.startswith(self.model + ":") or self.model.startswith(m + ":")
+                        for m in installed_names
+                    )
+                    if not has_exact:
+                        from shared.hardware.detector import HardwareDetector
+                        hw = HardwareDetector.detect()
+                        role = "vision" if Capability.VISION in self.capabilities else "text"
+                        try:
+                            fallback = ModelRegistry.select_best_model(role, hw, installed_names)
+                            logger.info(
+                                "Configured model '%s' not installed; resolved '%s' from local models",
+                                self.model,
+                                fallback,
+                            )
+                            self._resolved_model = fallback
+                            return fallback
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug("Failed to query runtime installed models: %s", e)
+            self._resolved_model = self.model
+            return self.model
+
+        # When model == "auto" or empty
+        models = await self.runtime.list_models()
+        installed_names = [m.name for m in models]
+        from shared.hardware.detector import HardwareDetector
+        hw = HardwareDetector.detect()
+        role = "vision" if Capability.VISION in self.capabilities else "text"
+        fallback = ModelRegistry.select_best_model(role, hw, installed_names)
+        self._resolved_model = fallback
+        return fallback
 
     async def generate(
         self,
@@ -54,7 +102,8 @@ class LocalAIProvider(ModelProvider):
     ) -> ModelResponse:
         """Executes turn against local runtime engine."""
         self.check_request(messages)
-        return await self.runtime.generate_chat(messages, self.model, config)
+        model = await self._get_model()
+        return await self.runtime.generate_chat(messages, model, config)
 
     async def aclose(self) -> None:
         await self.runtime.aclose()

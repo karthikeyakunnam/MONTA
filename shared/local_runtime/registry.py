@@ -112,6 +112,36 @@ KNOWN_MODELS: dict[str, ModelSpec] = {
         is_vision=True,
         description="High-efficiency visual perception model.",
     ),
+    "moondream": ModelSpec(
+        name="moondream",
+        family="moondream",
+        param_size="1.8b",
+        capabilities=frozenset({Capability.TEXT, Capability.VISION, Capability.JSON_MODE}),
+        min_vram_gb=1.5,
+        recommended_vram_gb=3.0,
+        is_vision=True,
+        description="Ultra-lightweight local multimodal vision model for fast keyframe analysis.",
+    ),
+    "moondream:latest": ModelSpec(
+        name="moondream:latest",
+        family="moondream",
+        param_size="1.8b",
+        capabilities=frozenset({Capability.TEXT, Capability.VISION, Capability.JSON_MODE}),
+        min_vram_gb=1.5,
+        recommended_vram_gb=3.0,
+        is_vision=True,
+        description="Ultra-lightweight local multimodal vision model for fast keyframe analysis.",
+    ),
+    "moondream:1.8b": ModelSpec(
+        name="moondream:1.8b",
+        family="moondream",
+        param_size="1.8b",
+        capabilities=frozenset({Capability.TEXT, Capability.VISION, Capability.JSON_MODE}),
+        min_vram_gb=1.5,
+        recommended_vram_gb=3.0,
+        is_vision=True,
+        description="Ultra-lightweight local multimodal vision model for fast keyframe analysis.",
+    ),
     # Fallback Lightweight Models
     "llama3.2:3b": ModelSpec(
         name="llama3.2:3b",
@@ -235,7 +265,7 @@ class ModelRegistry:
     @classmethod
     def _pick_vision(cls, candidates: list[tuple[str, str, ModelSpec]]) -> str:
         """Use a stable quality preference before a stable size/name fallback."""
-        preferred = ("qwen2-vl:7b", "llava:7b", "minicpm-v:8b", "moondream:latest")
+        preferred = ("qwen2-vl:7b", "llava:7b", "minicpm-v:8b", "moondream:latest", "moondream")
         preference = {name: index for index, name in enumerate(preferred)}
         return min(
             candidates,

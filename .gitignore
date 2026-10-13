@@ -64,3 +64,5 @@ coverage.xml
 
 # LUTs (large binary files — track with Git LFS)
 # services/edit_executor/luts/*.cube
+.aider*
+bank_project/

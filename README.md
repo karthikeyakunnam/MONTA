@@ -28,8 +28,8 @@ Layer 14 → Learning Layer (User Preferences + Feedback)
 | Component | Technology |
 |-----------|-----------|
 | Frontend | Next.js, Electron (later) |
-| Backend | FastAPI |
-| Orchestration | LangGraph |
+| Backend | FastAPI|
+| Orchestration | LangGraph|
 | Queue | Redis + Celery |
 | Database | PostgreSQL |
 | Vector Memory | Qdrant |

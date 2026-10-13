@@ -258,7 +258,10 @@ class MontaPipeline:
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
-    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
 
 
 def build_pipeline(
@@ -301,6 +304,82 @@ def build_pipeline(
 
     vision_src = providers.vision_for_analysis
     vision = VisionAnalyzer(vision_src) if vision_src else None
+
+    # Auto-detect local vision when no cloud vision provider is configured
+    if vision is None and _env_bool("MONTA_LOCAL_VISION", default=True):
+        try:
+            from orchestration.agents.intelligence.local_vision import LocalVisionPipeline
+            from shared.local_runtime.adapters.ollama import OllamaRuntime
+            from shared.local_runtime.provider import LocalAIProvider
+            from shared.local_runtime.registry import ModelRegistry
+            from shared.hardware.detector import HardwareDetector
+
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            runtime = OllamaRuntime(base_url=ollama_url)
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop and loop.is_running():
+                # Inside an already-running event loop (e.g. Celery worker)
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    is_up = pool.submit(asyncio.run, runtime.is_available()).result(timeout=5)
+            else:
+                is_up = asyncio.run(runtime.is_available())
+            if is_up:
+                if loop and loop.is_running():
+                    with concurrent.futures.ThreadPoolExecutor() as pool:
+                        models = pool.submit(asyncio.run, runtime.list_models()).result(timeout=10)
+                else:
+                    models = asyncio.run(runtime.list_models())
+                installed_names = [m.name for m in models]
+                hw = HardwareDetector.detect()
+
+                # Find a vision model
+                vision_models = [
+                    n for n in installed_names
+                    if ModelRegistry.get_spec(n).is_vision
+                ]
+                # Find a text model
+                text_models = [
+                    n for n in installed_names
+                    if not ModelRegistry.get_spec(n).is_vision
+                ]
+
+                if vision_models and text_models:
+                    try:
+                        vlm_name = ModelRegistry.select_best_model("vision", hw, installed_names)
+                    except ValueError:
+                        vlm_name = vision_models[0]
+                    try:
+                        text_name = ModelRegistry.select_best_model("text", hw, installed_names)
+                    except ValueError:
+                        text_name = text_models[0]
+
+                    vlm_runtime = OllamaRuntime(base_url=ollama_url)
+                    text_runtime = OllamaRuntime(base_url=ollama_url)
+                    vlm_provider = LocalAIProvider(runtime=vlm_runtime, model=vlm_name, vision=True)
+                    text_provider = LocalAIProvider(runtime=text_runtime, model=text_name, vision=False)
+
+                    vision = LocalVisionPipeline(vlm_provider, text_provider)
+                    logger.info(
+                        "Local vision pipeline enabled: VLM=%s, text=%s",
+                        vlm_name, text_name,
+                    )
+                elif vision_models:
+                    logger.info(
+                        "Local vision model(s) found (%s) but no text model for structuring; vision disabled",
+                        ", ".join(vision_models),
+                    )
+                else:
+                    logger.debug("No local vision models installed; vision disabled")
+            else:
+                logger.debug("Ollama not available; local vision disabled")
+        except Exception as e:
+            logger.debug("Local vision auto-detection failed: %s", e)
+
     refiner = StoryRefiner(providers.text) if providers.text and _env_bool("MONTA_STORY_REFINER") else None
 
     judge: StoryJudge = HeuristicStoryJudge()

@@ -38,13 +38,11 @@ Open failures:
 | `wedding_romantic_film` | pace inferred as medium; mood confidence is below the inference threshold |
 
 Layer 6 synthetic set (6 clips, real FFmpeg 7.0):
-
 | Measure | Result |
 |---|---|
 | Lighting accuracy | 5/5 |
 | Camera-motion accuracy | 6/6, after the tiled global-motion fix; 5/6 before |
 | Quality Spearman vs labels | 0.87 |
 | Re-encode consistency MAE | 0.11 |
-
 Semantic metrics are not yet measured: activity, emotion, scene and roles need
 human-labeled real footage and a vision provider.

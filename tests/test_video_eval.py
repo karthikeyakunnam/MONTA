@@ -16,7 +16,6 @@ VISION = json.dumps({"activities": ["barbell deadlift"], "objects": [], "camera_
                      "story_role_candidates": [{"role": "peak", "confidence": 0.8}, {"role": "intensity", "confidence": 0.6}],
                      "reasoning": "x"})
 
-
 def write_manifest(tmp_path, rows):
     path = tmp_path / "manifest.jsonl"
     path.write_text("\n".join(json.dumps(r) for r in rows))
