@@ -66,7 +66,7 @@ def real_video_dataset(tmp_path_factory):
 
 def _live_settings() -> ProviderSettings:
     """Use explicit test model names, never a simulated or automatic fallback."""
-    text_model = os.environ.get("MONTA_TEST_OLLAMA_TEXT_MODEL", "qwen2.5:7b")
+    text_model = os.environ.get("MONTA_TEST_OLLAMA_TEXT_MODEL", "qwen2.5-coder:1.5b")
     vision_model = os.environ.get("MONTA_TEST_OLLAMA_VISION_MODEL", "")
     return ProviderSettings(
         monta_offline_mode=True,
@@ -190,7 +190,13 @@ async def test_m3_end_to_end_local_vertical_slice(real_video_dataset, tmp_path: 
         assert render_result.height == 1920
         assert render_result.video_codec in ("h264", "avc1")
         assert render_result.audio_codec == "aac"
-        assert abs(render_result.duration_s - result.story.total_duration_s) < 1.0
+        transition_overlap_s = sum(
+            (seg.transition_in_ms / 1000.0)
+            for seg in timeline_ir.video_segments[1:]
+            if seg.transition_in and getattr(seg.transition_in, "value", str(seg.transition_in)) != "cut"
+        )
+        expected_rendered_duration = result.story.total_duration_s - transition_overlap_s
+        assert abs(render_result.duration_s - expected_rendered_duration) < 0.5
 
         print(f"[M3 Media] Rendered File Size: {render_result.file_size_mb} MB")
         print(f"[M3 Media] Render Time: {render_result.render_time_s}s (Encoder: {render_result.encoder_used})")

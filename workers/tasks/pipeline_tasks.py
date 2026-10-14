@@ -184,32 +184,72 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 )
 
                 # --- Layer 12: Critic System & Bounded Revision Loop ---
+                from orchestration.agents.critic.retry_logic import RetryManager
+
+                retry_mgr = RetryManager()
                 critic_verdict = None
                 active_story = result.story
+                best_story = active_story
+                best_timeline_ir = timeline_ir
+                best_score = 0.0
+                best_verdict = None
+                attempted_patterns = [active_story.story_pattern] if active_story.story_pattern else []
+
                 try:
                     publish(Stage.TIMELINE_BUILDING, "Evaluating edit with Critic System")
                     critic_verdict = await pipeline.evaluate_timeline(timeline_ir, active_story, result.context_pack)
-                    logger.info("Critic score: %s (retry=%s)", critic_verdict.get("overall_score"), critic_verdict.get("should_retry"))
+                    best_score = float(critic_verdict.get("overall_score", 0.0))
+                    best_verdict = critic_verdict
+                    logger.info("Critic score (attempt 0): %.2f (should_retry=%s)", best_score, critic_verdict.get("should_retry"))
 
-                    if critic_verdict.get("should_retry") and active_story.story_pattern:
-                        publish(Stage.STORY_BUILDING, "Critic recommended revision: refining narrative rhythm")
+                    attempt = 0
+                    while retry_mgr.should_retry(score=critic_verdict.get("overall_score", 0.0), retry_count=attempt):
+                        attempt += 1
+                        strategy = retry_mgr.get_retry_strategy(
+                            feedback=critic_verdict.get("feedback", []),
+                            scores=critic_verdict.get("scores", {}),
+                        )
+                        focus_desc = ", ".join(strategy["focus_areas"]) or "narrative pacing"
+                        publish(
+                            Stage.STORY_BUILDING,
+                            f"Critic revision {attempt}/{RetryManager.MAX_RETRIES}: targeting {focus_desc}",
+                            detail={"attempt": attempt, "strategy": strategy},
+                        )
                         try:
                             revised_story, _ = await pipeline.redesign_story(
                                 result.context_pack,
-                                avoid_patterns=[active_story.story_pattern],
+                                avoid_patterns=attempted_patterns,
                             )
+                            if revised_story.story_pattern:
+                                attempted_patterns.append(revised_story.story_pattern)
                             revised_base = pipeline.generate_timeline_ir(revised_story, result.context_pack)
                             revised_audio = await pipeline.build_soundtrack(revised_base, result.context_pack)
-                            timeline_ir = pipeline.generate_timeline_ir(
+                            revised_timeline = pipeline.generate_timeline_ir(
                                 revised_story,
                                 result.context_pack,
                                 audio_segments=revised_audio if revised_audio else None,
                             )
-                            active_story = revised_story
-                            critic_verdict = await pipeline.evaluate_timeline(timeline_ir, active_story, result.context_pack)
-                            logger.info("Revised critic score: %s", critic_verdict.get("overall_score"))
+                            new_verdict = await pipeline.evaluate_timeline(revised_timeline, revised_story, result.context_pack)
+                            new_score = float(new_verdict.get("overall_score", 0.0))
+                            logger.info("Critic revision attempt %d score: %.2f (vs previous best: %.2f)", attempt, new_score, best_score)
+
+                            # Keep the best valid result if a revision worsens quality
+                            if new_score > best_score:
+                                best_score = new_score
+                                best_story = revised_story
+                                best_timeline_ir = revised_timeline
+                                best_verdict = new_verdict
+
+                            critic_verdict = new_verdict
                         except Exception as rev_err:
-                            logger.warning("Critic revision failed, continuing with initial story: %s", rev_err)
+                            logger.warning("Critic revision attempt %d failed: %s", attempt, rev_err)
+                            break
+
+                    # Preserve the best evaluated edit result across all bounded retry attempts
+                    active_story = best_story
+                    timeline_ir = best_timeline_ir
+                    critic_verdict = best_verdict or critic_verdict
+                    logger.info("Selected final edit with score: %.2f (pattern=%s)", best_score, active_story.story_pattern)
                 except Exception as critic_err:
                     logger.warning("Critic evaluation skipped: %s", critic_err)
 

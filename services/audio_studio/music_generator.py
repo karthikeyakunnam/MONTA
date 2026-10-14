@@ -72,6 +72,13 @@ _STYLE_RECIPES = {
     },
 }
 
+# Style preset aliases
+_STYLE_RECIPES["orchestral"] = _STYLE_RECIPES["cinematic"]
+_STYLE_RECIPES["epic"] = _STYLE_RECIPES["intense"]
+_STYLE_RECIPES["bass_heavy"] = _STYLE_RECIPES["hype"]
+_STYLE_RECIPES["beat_sync"] = _STYLE_RECIPES["hype"]
+
+
 
 class MusicGenerator:
     """Generates synthetic background music beds matching requested mood and duration."""

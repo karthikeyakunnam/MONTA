@@ -166,6 +166,18 @@ class StyleMapper:
             return TransitionType.CUT, 0
         if raw in ("fade", "dissolve", "crossfade"):
             return TransitionType.CROSSFADE, max(50, default_ms)
+        if raw in ("wipe", "wipe_left", "glitch"):
+            return TransitionType.WIPE_LEFT, max(50, default_ms)
+        if raw in ("wipe_right",):
+            return TransitionType.WIPE_RIGHT, max(50, default_ms)
+        if raw in ("slide", "slide_left"):
+            return TransitionType.SLIDE_LEFT, max(50, default_ms)
+        if raw in ("slide_right",):
+            return TransitionType.SLIDE_RIGHT, max(50, default_ms)
+        if raw in ("fade_black", "fadeblack", "black"):
+            return TransitionType.FADE_BLACK, max(50, default_ms)
+        if raw in ("fade_white", "fadewhite", "white", "flash"):
+            return TransitionType.FADE_WHITE, max(50, default_ms)
         try:
             return TransitionType(raw), default_ms
         except ValueError:

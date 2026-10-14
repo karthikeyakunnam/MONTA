@@ -78,7 +78,13 @@ async def test_real_m3_golden_scenario(scenario: str, prompt: str, scenario_data
         assert render.video_codec in ("h264", "avc1")
         assert render.audio_codec == "aac"
         assert [s.clip_id for s in timeline.video_segments] == [s.clip_id for s in result.story.timeline]
-        assert abs(render.duration_s - timeline.duration_s) < 1.0
+        transition_overlap_s = sum(
+            (s.transition_in_ms / 1000.0)
+            for s in timeline.video_segments[1:]
+            if s.transition_in and getattr(s.transition_in, "value", str(s.transition_in)) != "cut"
+        )
+        expected_duration = timeline.duration_s - transition_overlap_s
+        assert abs(render.duration_s - expected_duration) < 0.5
         if scenario == "vertical_30_second_reel":
             assert (render.width, render.height) == (1080, 1920)
             assert result.story.requested_duration_s == pytest.approx(30.0)

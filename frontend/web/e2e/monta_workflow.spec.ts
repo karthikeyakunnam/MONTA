@@ -326,4 +326,202 @@ test.describe('MONTA Video Creation Workflow', () => {
     await expect(downloadLink).toHaveText('download');
     await expect(downloadLink).toHaveAttribute('href', '/api/v1/render/render_final_123/download');
   });
+
+  test('5. Handles model unavailable or pipeline startup failure with retry', async ({ page }) => {
+    const projectId = 'proj_model_unavail_01';
+    let startAttempts = 0;
+
+    await page.route(`**/api/v1/projects/${projectId}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: projectId,
+          title: 'Ollama Unreachable Project',
+          description: null,
+          status: 'draft',
+          status_detail: 'upload footage to begin',
+          raw_prompt: 'Cinematic video',
+          target_platform: 'youtube',
+          clip_count: 1,
+          total_duration_s: 5.0,
+          clips: [
+            {
+              id: 'c1',
+              status: 'analyzed',
+              filename: 'clip1.mp4',
+              original_filename: 'clip1.mp4',
+              duration: 5.0,
+              fps: 30.0,
+              resolution: '1920x1080',
+              resolution_class: '1080p',
+              video_codec: 'h264',
+              bitrate: 5000000,
+              file_size_bytes: 3000000,
+              has_audio: true,
+              created_at: new Date().toISOString(),
+            },
+          ],
+          jobs: [],
+          quota: [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/projects/${projectId}/events`, async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    });
+
+    await page.route('**/api/v1/upload/limits', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          allowed_extensions: ['.mp4'],
+          max_file_bytes: 500000000,
+          max_request_bytes: 1000000000,
+          max_files_per_request: 20,
+          max_clip_seconds: 600,
+          min_clip_seconds: 1,
+          resolution_classes: [],
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/projects/${projectId}/pipeline`, async (route) => {
+      startAttempts++;
+      if (startAttempts === 1) {
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/json',
+          body: JSON.stringify({ detail: 'Ollama model qwen2.5-coder:1.5b unavailable or connection refused' }),
+        });
+      } else {
+        await route.fulfill({
+          status: 202,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            job_id: 'job_recovered',
+            tracking_id: 'job_recovered',
+            task_id: 'task_rec',
+            state: 'queued',
+            project_status: 'queued',
+          }),
+        });
+      }
+    });
+
+    await page.goto(`/projects/${projectId}`);
+
+    const runBtn = page.locator('button:has-text("Start processing")');
+    await expect(runBtn).toBeVisible();
+    await runBtn.click();
+
+    // Verify banner is shown with failure description
+    const errorBanner = page.locator('.banner[role="alert"]');
+    await expect(errorBanner).toBeVisible();
+    await expect(errorBanner).toContainText('The processing queue is unavailable');
+
+    // Click retry
+    const retryBtn = errorBanner.locator('button:has-text("Try again")');
+    await expect(retryBtn).toBeVisible();
+    await retryBtn.click();
+    expect(startAttempts).toBe(2);
+  });
+
+  test('6. Displays render/pipeline failure details and offers retry', async ({ page }) => {
+    const projectId = 'proj_failed_render_01';
+
+    await page.route(`**/api/v1/projects/${projectId}`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: projectId,
+          title: 'Failing Render Project',
+          description: null,
+          status: 'failed',
+          status_detail: 'FFmpeg encoding failed: invalid aspect ratio filter dimensions',
+          raw_prompt: 'High octane car reel',
+          target_platform: 'reels',
+          clip_count: 1,
+          total_duration_s: 8.0,
+          clips: [
+            {
+              id: 'c2',
+              status: 'analyzed',
+              filename: 'race.mp4',
+              original_filename: 'race.mp4',
+              duration: 8.0,
+              fps: 60.0,
+              resolution: '1080x1920',
+              resolution_class: '1080p',
+              video_codec: 'h264',
+              bitrate: 10000000,
+              file_size_bytes: 5000000,
+              has_audio: false,
+              created_at: new Date().toISOString(),
+            },
+          ],
+          jobs: [
+            {
+              id: 'job_failed_01',
+              kind: 'pipeline',
+              state: 'failed',
+              stage: 'rendering',
+              task_id: 'task_f01',
+              attempts: 1,
+              error: 'FFmpeg encoding failed: invalid aspect ratio filter dimensions',
+              created_at: new Date().toISOString(),
+              started_at: new Date().toISOString(),
+              finished_at: new Date().toISOString(),
+            },
+          ],
+          quota: [],
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }),
+      });
+    });
+
+    await page.route(`**/api/v1/projects/${projectId}/events`, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify([
+          { project_id: projectId, stage: 'rendering', message: 'FFmpeg encoding failed', at: '2026-10-14T08:00:00Z' },
+        ]),
+      });
+    });
+
+    await page.route('**/api/v1/upload/limits', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          allowed_extensions: ['.mp4'],
+          max_file_bytes: 500000000,
+          max_request_bytes: 1000000000,
+          max_files_per_request: 20,
+          max_clip_seconds: 600,
+          min_clip_seconds: 1,
+          resolution_classes: [],
+        }),
+      });
+    });
+
+    await page.goto(`/projects/${projectId}`);
+
+    // Verify failure banner is shown
+    const failureBanner = page.locator('.banner.error');
+    await expect(failureBanner).toBeVisible();
+    await expect(failureBanner).toContainText('Processing failed');
+    await expect(failureBanner).toContainText('FFmpeg encoding failed');
+
+    // Run again button is rendered
+    const runAgainBtn = failureBanner.locator('button:has-text("Run again")');
+    await expect(runAgainBtn).toBeVisible();
+  });
 });

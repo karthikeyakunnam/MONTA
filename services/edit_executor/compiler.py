@@ -164,8 +164,18 @@ class FFmpegCompiler:
             audio_nodes.append(f"[{a_node}]")
 
         # 3. Concatenation / Transitions
+        _TRANSITION_XFADE_MAP = {
+            TransitionType.CROSSFADE: "fade",
+            TransitionType.FADE_BLACK: "fadeblack",
+            TransitionType.FADE_WHITE: "fadewhite",
+            TransitionType.WIPE_LEFT: "wipeleft",
+            TransitionType.WIPE_RIGHT: "wiperight",
+            TransitionType.SLIDE_LEFT: "slideleft",
+            TransitionType.SLIDE_RIGHT: "slideright",
+        }
+
         has_xfade = any(
-            seg.transition_in == TransitionType.CROSSFADE and seg.transition_in_ms > 0
+            seg.transition_in in _TRANSITION_XFADE_MAP and seg.transition_in_ms > 0
             for seg in timeline.video_segments[1:]
         )
 
@@ -185,11 +195,13 @@ class FFmpegCompiler:
                 nxt_v_out = f"xfv_{j}"
                 nxt_a_out = f"xfa_{j}"
 
-                trans_dur = (seg.transition_in_ms / 1000.0) if (seg.transition_in == TransitionType.CROSSFADE and seg.transition_in_ms > 0) else 0.001
+                is_xfade_seg = seg.transition_in in _TRANSITION_XFADE_MAP and seg.transition_in_ms > 0
+                trans_dur = (seg.transition_in_ms / 1000.0) if is_xfade_seg else 0.001
+                xfade_name = _TRANSITION_XFADE_MAP.get(seg.transition_in, "fade")
                 xfade_offset = max(0.0, offset - trans_dur)
 
                 filters.append(
-                    f"{cur_v}{next_v}xfade=transition=fade:duration={trans_dur:.3f}:offset={xfade_offset:.3f}[{nxt_v_out}]"
+                    f"{cur_v}{next_v}xfade=transition={xfade_name}:duration={trans_dur:.3f}:offset={xfade_offset:.3f}[{nxt_v_out}]"
                 )
                 filters.append(
                     f"{cur_a}{next_a}acrossfade=d={trans_dur:.3f}[{nxt_a_out}]"
