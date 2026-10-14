@@ -88,6 +88,14 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 sources = [ClipSource(clip_id=c.id, path=str(_storage_path(settings, c.storage_key))) for c in clips]
                 await db.commit()
 
+            from shared.task_persistence import TaskPersistence, TaskStage
+            checkpoint_dir = settings.storage_root_path / "checkpoints" / project_id
+            checkpoint_dir.mkdir(parents=True, exist_ok=True)
+            persistence = TaskPersistence(str(checkpoint_dir))
+            checkpoint = persistence.create(task_id=job_id, project_id=project_id)
+            checkpoint.advance_to(TaskStage.ANALYZING)
+            persistence.save(checkpoint)
+
             publish(Stage.ANALYZING, f"Analyzing {len(sources)} clips", detail={"clips": len(sources)})
 
             pipeline = build_pipeline()
@@ -106,6 +114,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             percent=round(100 * analyzed["count"] / total, 1),
                             clip_id=event.task_id.split(":", 1)[1], detail={"analyzed": analyzed["count"], "total": total})
                 elif event.task_id == "design_story":
+                    checkpoint.advance_to(TaskStage.STORY_DESIGN)
+                    persistence.save(checkpoint)
                     publish(Stage.STORY_BUILDING, "Building the story")
 
             pipeline.director.executor._on_event = on_event
@@ -151,18 +161,68 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 project.story_plan = story
                 project.story_judgement = judgement.model_dump(mode="json")
 
-                # --- M3 End-to-End Rendering Step ---
+                # Advance task checkpoint to timeline generation
+                checkpoint.advance_to(TaskStage.TIMELINE_GENERATION)
+                persistence.save(checkpoint)
+
+                # --- Layer 8, 9 & 10: Timeline Building & Audio Studio ---
                 publish(Stage.TIMELINE_BUILDING, "Generating timeline and compiling execution plan")
-                timeline_ir = pipeline.generate_timeline_ir(result.story, result.context_pack)
+                base_timeline = pipeline.generate_timeline_ir(result.story, result.context_pack)
+
+                # Compose audio soundtrack with speech-aware ducking and hero accents
+                audio_tracks = ()
+                try:
+                    publish(Stage.TIMELINE_BUILDING, "Composing background score and audio mixing")
+                    audio_tracks = await pipeline.build_soundtrack(base_timeline, result.context_pack)
+                except Exception as e:
+                    logger.warning("Audio soundtrack composition skipped: %s", e)
+
+                timeline_ir = pipeline.generate_timeline_ir(
+                    result.story,
+                    result.context_pack,
+                    audio_segments=audio_tracks if audio_tracks else None,
+                )
+
+                # --- Layer 12: Critic System & Bounded Revision Loop ---
+                critic_verdict = None
+                active_story = result.story
+                try:
+                    publish(Stage.TIMELINE_BUILDING, "Evaluating edit with Critic System")
+                    critic_verdict = await pipeline.evaluate_timeline(timeline_ir, active_story, result.context_pack)
+                    logger.info("Critic score: %s (retry=%s)", critic_verdict.get("overall_score"), critic_verdict.get("should_retry"))
+
+                    if critic_verdict.get("should_retry") and active_story.story_pattern:
+                        publish(Stage.STORY_BUILDING, "Critic recommended revision: refining narrative rhythm")
+                        try:
+                            revised_story, _ = await pipeline.redesign_story(
+                                result.context_pack,
+                                avoid_patterns=[active_story.story_pattern],
+                            )
+                            revised_base = pipeline.generate_timeline_ir(revised_story, result.context_pack)
+                            revised_audio = await pipeline.build_soundtrack(revised_base, result.context_pack)
+                            timeline_ir = pipeline.generate_timeline_ir(
+                                revised_story,
+                                result.context_pack,
+                                audio_segments=revised_audio if revised_audio else None,
+                            )
+                            active_story = revised_story
+                            critic_verdict = await pipeline.evaluate_timeline(timeline_ir, active_story, result.context_pack)
+                            logger.info("Revised critic score: %s", critic_verdict.get("overall_score"))
+                        except Exception as rev_err:
+                            logger.warning("Critic revision failed, continuing with initial story: %s", rev_err)
+                except Exception as critic_err:
+                    logger.warning("Critic evaluation skipped: %s", critic_err)
+
                 existing_timeline = (await db.execute(
                     select(Timeline).where(Timeline.project_id == project_id)
                 )).scalar_one_or_none()
                 timeline_row = existing_timeline or Timeline(id=f"timeline_{job_id}", project_id=project_id)
-                timeline_row.story_acts = {"assignments": result.story.act_assignments, "hero_clip_id": result.story.hero_clip_id}
+                timeline_row.story_acts = {"assignments": active_story.act_assignments, "hero_clip_id": active_story.hero_clip_id}
                 timeline_row.style_config = {
-                    "pace": result.story.pace.value.value,
-                    "emotion": result.story.emotion.value.value,
+                    "pace": active_story.pace.value.value,
+                    "emotion": active_story.emotion.value.value,
                     "timeline_validation": {"is_valid": True, "errors": [], "warnings": []},
+                    "critic_evaluation": critic_verdict,
                 }
                 timeline_row.entries = timeline_ir.model_dump(mode="json")
                 timeline_row.total_duration = timeline_ir.duration_s
@@ -177,6 +237,9 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     job.stage = Stage.TIMELINE_BUILDING.value
                 await db.commit()
 
+                # --- Layer 13: Media Rendering ---
+                checkpoint.advance_to(TaskStage.RENDERING)
+                persistence.save(checkpoint)
                 publish(Stage.RENDERING, "Rendering final media output with FFmpeg")
                 
                 render_dir = settings.storage_root_path / "renders" / project_id
@@ -187,7 +250,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     publish(Stage.RENDERING, f"Rendering video: {pct:.0f}%", percent=pct, detail={"stage": stage_name, "elapsed_s": elapsed})
 
                 render_result = await pipeline.render_story(
-                    story=result.story,
+                    story=active_story,
                     pack=result.context_pack,
                     output_path=str(render_file),
                     on_progress=on_render_progress,
@@ -195,11 +258,41 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 )
 
                 if not render_result.success:
+                    checkpoint.mark_failed(render_result.error_message or "Rendering failed")
+                    persistence.save(checkpoint)
                     raise RuntimeError(f"Rendering failed: {render_result.error_message}")
+
+                # --- Layer 6 & 13: Platform Export ---
+                checkpoint.advance_to(TaskStage.EXPORTING)
+                persistence.save(checkpoint)
+                platform_export_path = None
+                target_platform = result.context_pack.platform.platform.value if result.context_pack.platform else "general"
+                if target_platform in ("tiktok", "instagram", "youtube_short", "twitter"):
+                    try:
+                        from services.render_farm.format_exporter import FormatExporter
+                        publish(Stage.RENDERING, f"Exporting optimized {target_platform} format")
+                        export_file = render_dir / f"export_{target_platform}_{job_id}.mp4"
+                        exporter = FormatExporter()
+                        platform_export_path = await exporter.export_for_platform(
+                            input_path=str(render_file),
+                            output_path=str(export_file),
+                            platform=target_platform,
+                            resolution="1080p",
+                        )
+                    except Exception as exp_err:
+                        logger.warning("Platform export failed, master render preserved: %s", exp_err)
+
+                checkpoint.mark_complete(artifacts={
+                    "master_mp4": str(render_file),
+                    "platform_export": platform_export_path,
+                    "critic_score": critic_verdict.get("overall_score") if critic_verdict else None,
+                })
+                persistence.save(checkpoint)
 
                 timeline_row.style_config = {
                     **(timeline_row.style_config or {}),
                     "compiled_execution_plan": render_result.execution_plan,
+                    "platform_export": platform_export_path,
                     "render_metadata": {
                         "output_path": render_result.output_path,
                         "duration_s": render_result.duration_s,
@@ -215,7 +308,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     },
                 }
 
-                # Persist Render row
+                # Persist Render rows
                 from app.models.render import Render, RenderStatus
                 from uuid import uuid4
 
@@ -235,6 +328,25 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 )
                 db.add(render_row)
 
+                if platform_export_path and os.path.exists(platform_export_path):
+                    export_render_id = str(uuid4())
+                    export_size = os.path.getsize(platform_export_path)
+                    export_row = Render(
+                        id=export_render_id,
+                        project_id=project_id,
+                        status=RenderStatus.COMPLETE.value,
+                        resolution="1080x1920" if target_platform in ("tiktok", "instagram", "youtube_short") else f"{render_result.width}x{render_result.height}",
+                        format="mp4",
+                        platform=target_platform,
+                        output_path=platform_export_path,
+                        file_size_bytes=float(export_size),
+                        duration=float(render_result.duration_s),
+                        progress_percent=100.0,
+                        started_at=job.started_at if job else None,
+                        completed_at=datetime.now(timezone.utc),
+                    )
+                    db.add(export_row)
+
                 project.status = ProjectStatus.COMPLETE.value
                 project.status_detail = (f"video ready: {render_result.duration_s:.1f}s, "
                                          f"{render_result.width}x{render_result.height}, {render_result.file_size_mb}MB")
@@ -242,12 +354,14 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     job.state = JobState.SUCCEEDED.value
                     job.stage = Stage.COMPLETE.value
                     job.finished_at = datetime.now(timezone.utc)
-                    job.result = {"story_pattern": result.story.story_pattern,
-                                  "cuts": len(result.story.timeline),
+                    job.result = {"story_pattern": active_story.story_pattern,
+                                  "cuts": len(active_story.timeline),
                                   "duration_s": render_result.duration_s,
                                   "render_id": render_id,
                                   "output_path": str(render_file),
+                                  "platform_export": platform_export_path,
                                   "judge_score": judgement.overall_score,
+                                  "critic_score": critic_verdict.get("overall_score") if critic_verdict else None,
                                   "degraded_tasks": failures,
                                   "artifacts": {
                                       "context_pack": "projects.context",
@@ -256,20 +370,25 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                                       "compiled_execution_plan": "timelines.style_config.compiled_execution_plan",
                                       "render_metadata": "timelines.style_config.render_metadata",
                                       "final_mp4": str(render_file),
+                                      "platform_export": platform_export_path,
                                   }}
                 await db.commit()
 
             publish(Stage.COMPLETE, project.status_detail,
                     percent=100.0,
-                    detail={"story_pattern": result.story.story_pattern, "cuts": len(result.story.timeline),
+                    detail={"story_pattern": active_story.story_pattern, "cuts": len(active_story.timeline),
                                   "duration_s": render_result.duration_s, "render_id": render_id,
                                   "output_path": str(render_file), "judge_score": judgement.overall_score,
-                                  "validation_passed": result.story.validation.passed})
+                                  "critic_score": critic_verdict.get("overall_score") if critic_verdict else None,
+                                  "platform_export": platform_export_path,
+                                  "validation_passed": active_story.validation.passed})
             logger.info("pipeline complete with rendered video", extra={"project_id": project_id, "job_id": job_id,
                                                                         "output_path": str(render_file)})
-            return {"project_id": project_id, "status": "complete", "story_pattern": result.story.story_pattern,
-                    "cuts": len(result.story.timeline), "render_id": render_id, "output_path": str(render_file),
-                    "duration_s": render_result.duration_s, "judge_score": judgement.overall_score}
+            return {"project_id": project_id, "status": "complete", "story_pattern": active_story.story_pattern,
+                    "cuts": len(active_story.timeline), "render_id": render_id, "output_path": str(render_file),
+                    "platform_export": platform_export_path, "duration_s": render_result.duration_s,
+                    "judge_score": judgement.overall_score,
+                    "critic_score": critic_verdict.get("overall_score") if critic_verdict else None}
     finally:
         await engine.dispose()
 

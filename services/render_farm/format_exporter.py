@@ -115,6 +115,42 @@ class FormatExporter:
         """Return list of available platform labels."""
         return list(PLATFORM_SPECS.keys())
 
+    @classmethod
+    def normalize_platform(cls, platform: str) -> str:
+        p = str(platform).strip().lower().replace("-", "_")
+        aliases = {
+            "instagram": "instagram_reels",
+            "insta": "instagram_reels",
+            "reels": "instagram_reels",
+            "youtube_short": "youtube_shorts",
+            "shorts": "youtube_shorts",
+            "yt_shorts": "youtube_shorts",
+            "youtube": "youtube_landscape",
+            "landscape": "youtube_landscape",
+            "x": "twitter",
+            "general": "youtube_landscape",
+        }
+        return aliases.get(p, p)
+
+    async def export_for_platform(
+        self,
+        input_path: str | Path,
+        output_path: str | Path | None = None,
+        platform: str = "general",
+        resolution: str = "1080p",
+    ) -> str:
+        """Convenience method returning output_path string."""
+        norm_p = self.normalize_platform(platform)
+        out_dir = Path(output_path).parent if output_path else None
+        res = await self.export(input_path, norm_p, output_dir=out_dir)
+        if not res.success:
+            raise RenderError(res.error_message)
+        if output_path and res.output_path != str(output_path):
+            import shutil
+            shutil.move(res.output_path, str(output_path))
+            return str(output_path)
+        return res.output_path
+
     async def export(
         self,
         source_path: str | Path,
@@ -135,7 +171,8 @@ class FormatExporter:
         if not src.exists():
             raise RenderError(f"Source file does not exist: {src}")
 
-        spec = PLATFORM_SPECS.get(platform)
+        norm_p = self.normalize_platform(platform)
+        spec = PLATFORM_SPECS.get(norm_p)
         if spec is None:
             return ExportResult(
                 platform=platform, output_path="", width=0, height=0,

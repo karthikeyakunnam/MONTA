@@ -26,6 +26,41 @@ class RenderRequest(BaseModel):
     format: str = "mp4"
 
 
+@router.post("/", status_code=status.HTTP_202_ACCEPTED)
+async def create_render(
+    request: RenderRequest,
+    db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(current_user_id),
+):
+    """Submits a render or multi-resolution export job for a project."""
+    import uuid
+    from datetime import datetime, timezone
+
+    project = await db.get(Project, request.project_id)
+    if project is None or project.user_id != user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+
+    render_id = str(uuid.uuid4())
+    render_row = Render(
+        id=render_id,
+        project_id=request.project_id,
+        status=RenderStatus.QUEUED.value,
+        resolution=request.resolutions[0] if request.resolutions else "1080p",
+        format=request.format,
+        started_at=datetime.now(timezone.utc),
+    )
+    db.add(render_row)
+    await db.commit()
+
+    return {
+        "render_id": render_id,
+        "project_id": request.project_id,
+        "status": RenderStatus.QUEUED.value,
+        "resolutions": request.resolutions,
+        "format": request.format,
+    }
+
+
 @router.get("/{render_id}/download")
 async def download_render(
     render_id: str,

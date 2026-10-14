@@ -20,6 +20,7 @@ import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 from memory.narrative_memory import (
     InMemoryNarrativeStore,
@@ -43,7 +44,7 @@ from shared.contracts.director import ExecutionPlan, ExecutionReport, TaskSpec, 
 from shared.contracts.evaluation import StoryJudgement
 from shared.contracts.intent import IntentAnalysis
 from shared.contracts.story import StoryPlan, ValidationReport
-from shared.contracts.timeline import TimelineIR
+from shared.contracts.timeline import AudioSegmentIR, TimelineIR
 from shared.exceptions import PipelineError
 from shared.observability import catalog as m
 from shared.observability.context import bind, new_trace
@@ -225,16 +226,85 @@ class MontaPipeline:
         story: StoryPlan,
         pack: ContextPack,
         style_override: dict | None = None,
+        audio_segments: Sequence[AudioSegmentIR] | None = None,
     ):
         """Translate a StoryPlan and reject invalid Timeline IR before rendering."""
         from services.timeline_generator.translator import StoryToTimelineTranslator
         from services.edit_executor.validator import EditPlanValidator
 
-        timeline = StoryToTimelineTranslator.translate(story=story, pack=pack, style_override=style_override)
+        timeline = StoryToTimelineTranslator.translate(
+            story=story,
+            pack=pack,
+            style_override=style_override,
+            audio_segments=audio_segments,
+        )
         source_durations_ms = {meta.clip_id: round(meta.duration_s * 1000) for meta in pack.video_metadata}
         validation = EditPlanValidator().validate(timeline, source_durations_ms=source_durations_ms)
         validation.raise_if_invalid()
         return timeline
+
+    async def build_soundtrack(
+        self,
+        timeline: TimelineIR,
+        pack: ContextPack,
+        style: str | None = None,
+        enable_ducking: bool = True,
+    ) -> tuple[AudioSegmentIR, ...]:
+        """Generate background music and hero sound effects using AudioStudio."""
+        from services.audio_studio.studio import AudioStudio
+        from services.style_engine.mapper import StyleMapper
+
+        resolved_style = StyleMapper.resolve_style_for_pack(pack)
+        genre = style or resolved_style.get("music_genre", "cinematic")
+        studio = AudioStudio()
+        return await studio.create_soundtrack(
+            timeline=timeline,
+            style=genre,
+            enable_ducking=enable_ducking,
+        )
+
+    async def evaluate_timeline(
+        self,
+        timeline: TimelineIR,
+        story: StoryPlan,
+        pack: ContextPack,
+        captions: list[dict] | None = None,
+    ) -> dict[str, Any]:
+        """Multi-dimensional evaluation of the edit using CriticEvaluator."""
+        from orchestration.agents.critic.evaluator import CriticEvaluator
+
+        cuts_dicts = [
+            {
+                "index": i,
+                "clip_id": seg.clip_id,
+                "timeline_start_ms": seg.timeline_start_ms,
+                "timeline_end_ms": seg.timeline_end_ms,
+                "start": seg.timeline_start_ms / 1000.0,
+                "end": seg.timeline_end_ms / 1000.0,
+                "is_hero": seg.is_hero,
+                "color": seg.color.model_dump() if seg.color else None,
+            }
+            for i, seg in enumerate(timeline.video_segments)
+        ]
+        audio_dicts = [
+            {
+                "track_id": trk.track_id,
+                "volume": trk.volume,
+                "ducking": trk.ducking,
+                "loop": trk.loop,
+            }
+            for trk in timeline.audio_segments
+        ]
+        has_dialogue = any(seg.has_audio for seg in timeline.video_segments)
+        evaluator = CriticEvaluator()
+        return await evaluator.evaluate({
+            "timeline": cuts_dicts,
+            "audio_segments": audio_dicts,
+            "captions": captions or [],
+            "has_dialogue": has_dialogue,
+            "pace": story.pace.value.value if story.pace else "medium",
+            "story_plan": story.model_dump(mode="json"),
+        })
 
     async def render_story(
         self,
