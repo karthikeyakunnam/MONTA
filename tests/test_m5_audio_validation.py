@@ -75,7 +75,7 @@ def _measure_peak_loudness(path: str) -> dict:
     """Use ffmpeg volumedetect to get max_volume and mean_volume in dBFS."""
     result = subprocess.run(
         [
-            "ffmpeg", "-v", "error", "-i", str(path),
+            "ffmpeg", "-v", "info", "-i", str(path),
             "-af", "volumedetect", "-f", "null", "-",
         ],
         capture_output=True, text=True, timeout=60,
@@ -98,7 +98,7 @@ def _make_test_video(path: Path, duration_s: float = 3.0, freq: int = 440, color
         "ffmpeg", "-y", "-v", "error",
         "-f", "lavfi", "-i", f"color={color}:size=320x240:duration={duration_s}:rate=30",
         "-f", "lavfi", "-i", f"sine=frequency={freq}:duration={duration_s}",
-        "-c:v", "libx264", "-c:a", "aac", "-b:a", "128k",
+        "-c:v", "libx264", "-c:a", "aac", "-ac", "2", "-b:a", "128k",
         str(path),
     ], check=True)
     return path
@@ -244,11 +244,17 @@ async def test_corrupt_audio_asset_fails_gracefully(tmp_path):
     )
     out = tmp_path / "out_corrupt.mp4"
     renderer = MediaRenderer()
-    result = await renderer.render(timeline, str(out))
-    # Render must fail and report an error — not produce a silent/corrupt output
-    assert not result.success or not out.exists() or out.stat().st_size < 1000, (
-        "Expected render to fail for corrupt audio asset, but it succeeded"
-    )
+    # Render must fail with an exception or return failure — not produce silent/corrupt output
+    from services.edit_executor.executor import FFmpegExecutionError
+    try:
+        result = await renderer.render(timeline, str(out))
+        # If it returns instead of raising, it should indicate failure
+        assert not result.success or not out.exists() or out.stat().st_size < 1000, (
+            "Expected render to fail for corrupt audio asset, but it succeeded"
+        )
+    except (FFmpegExecutionError, RuntimeError):
+        # Expected: corrupt audio input causes FFmpeg to fail
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -456,8 +462,7 @@ def test_voiceover_stub_documented_returns_empty():
     """VoiceoverGenerator.generate must return empty string (stub) without raising."""
     from services.audio_studio.voiceover import VoiceoverGenerator
     vg = VoiceoverGenerator()
-    import asyncio as _asyncio
-    result = _asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         vg.generate("Test narration text", voice="default")
     )
     # Stub: returns empty string — this IS the documented behavior
@@ -469,8 +474,7 @@ def test_voiceover_stub_documented_returns_empty():
 def test_dj_remix_stub_documented():
     """DJRemix.remix must return empty string (stub) without raising."""
     from services.audio_studio.dj_remix import DJRemix
-    import asyncio as _asyncio
-    result = _asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         DJRemix().remix("/fake/track.m4a", style="hype")
     )
     assert isinstance(result, str)
@@ -480,8 +484,7 @@ def test_dj_remix_stub_documented():
 def test_beat_extension_stub_documented():
     """BeatExtender.extend must return empty string (stub) without raising."""
     from services.audio_studio.beat_extension import BeatExtender
-    import asyncio as _asyncio
-    result = _asyncio.get_event_loop().run_until_complete(
+    result = asyncio.run(
         BeatExtender().extend("/fake/track.m4a", target_duration=30.0)
     )
     assert isinstance(result, str)

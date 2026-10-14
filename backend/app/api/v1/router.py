@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import audio, export, health, metrics, projects, prompts, render, timeline, upload
+from app.api.v1 import audio, export, feedback, health, metrics, models, projects, prompts, render, timeline, upload
 
 api_router = APIRouter()
 
@@ -14,4 +14,6 @@ api_router.include_router(timeline.router, prefix="/timeline", tags=["timeline"]
 api_router.include_router(audio.router, prefix="/audio", tags=["audio"])
 api_router.include_router(render.router, prefix="/render", tags=["render"])
 api_router.include_router(export.router, prefix="/export", tags=["export"])
+api_router.include_router(models.router, prefix="/models", tags=["models"])
+api_router.include_router(feedback.router, prefix="/feedback", tags=["feedback"])
 api_router.include_router(metrics.router, prefix="/metrics", tags=["observability"])
