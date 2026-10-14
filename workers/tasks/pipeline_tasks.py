@@ -85,6 +85,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 project.status_detail = f"analyzing {len(clips)} clips"
                 prompt = project.raw_prompt or ""
                 user_id = project.user_id
+                target_platform = project.target_platform
+                edit_options = dict(project.edit_options or {})
                 sources = [ClipSource(clip_id=c.id, path=str(_storage_path(settings, c.storage_key))) for c in clips]
                 await db.commit()
 
@@ -119,7 +121,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     publish(Stage.STORY_BUILDING, "Building the story")
 
             pipeline.director.executor._on_event = on_event
-            result = await pipeline.run(project_id=project_id, user_id=user_id, prompt=prompt, clips=sources)
+            result = await pipeline.run(project_id=project_id, user_id=user_id, prompt=prompt, clips=sources,
+                                        target_platform=target_platform, edit_options=edit_options)
 
             async with session_maker() as db:
                 project = await db.get(Project, project_id)
@@ -167,19 +170,27 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
 
                 # --- Layer 8, 9 & 10: Timeline Building & Audio Studio ---
                 publish(Stage.TIMELINE_BUILDING, "Generating timeline and compiling execution plan")
-                base_timeline = pipeline.generate_timeline_ir(result.story, result.context_pack)
+                style_override = _style_override(edit_options)
+                base_timeline = pipeline.generate_timeline_ir(result.story, result.context_pack,
+                                                              style_override=style_override)
 
                 # Compose audio soundtrack with speech-aware ducking and hero accents
                 audio_tracks = ()
                 try:
                     publish(Stage.TIMELINE_BUILDING, "Composing background score and audio mixing")
-                    audio_tracks = await pipeline.build_soundtrack(base_timeline, result.context_pack)
+                    if edit_options.get("add_music", True):
+                        selected_music = edit_options.get("music_style")
+                        audio_tracks = await pipeline.build_soundtrack(
+                            base_timeline, result.context_pack,
+                            style=selected_music,
+                        )
                 except Exception as e:
                     logger.warning("Audio soundtrack composition skipped: %s", e)
 
                 timeline_ir = pipeline.generate_timeline_ir(
                     result.story,
                     result.context_pack,
+                    style_override=style_override,
                     audio_segments=audio_tracks if audio_tracks else None,
                 )
 
@@ -222,11 +233,20 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             )
                             if revised_story.story_pattern:
                                 attempted_patterns.append(revised_story.story_pattern)
-                            revised_base = pipeline.generate_timeline_ir(revised_story, result.context_pack)
-                            revised_audio = await pipeline.build_soundtrack(revised_base, result.context_pack)
+                            revised_base = pipeline.generate_timeline_ir(
+                                revised_story, result.context_pack, style_override=style_override,
+                            )
+                            revised_audio = ()
+                            if edit_options.get("add_music", True):
+                                selected_music = edit_options.get("music_style")
+                                revised_audio = await pipeline.build_soundtrack(
+                                    revised_base, result.context_pack,
+                                    style=selected_music,
+                                )
                             revised_timeline = pipeline.generate_timeline_ir(
                                 revised_story,
                                 result.context_pack,
+                                style_override=style_override,
                                 audio_segments=revised_audio if revised_audio else None,
                             )
                             new_verdict = await pipeline.evaluate_timeline(revised_timeline, revised_story, result.context_pack)
@@ -301,6 +321,47 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     checkpoint.mark_failed(render_result.error_message or "Rendering failed")
                     persistence.save(checkpoint)
                     raise RuntimeError(f"Rendering failed: {render_result.error_message}")
+
+                if not render_result.validation_passed:
+                    raise RuntimeError("FFprobe did not validate the rendered MP4.")
+
+                caption_style = edit_options.get("caption_style")
+                if caption_style is None:
+                    inferred_caption = result.context_pack.intent.caption_style
+                    caption_style = inferred_caption.value.value if inferred_caption and inferred_caption.value else "None"
+                if caption_style and caption_style != "None":
+                    publish(Stage.RENDERING, "Transcribing speech and burning captions with local Whisper")
+                    try:
+                        from services.edit_executor.caption_engine import CaptionEngine
+                        from services.render_farm.output_validator import OutputValidator
+
+                        caption_engine = CaptionEngine(
+                            model_size=settings.WHISPER_MODEL_SIZE,
+                            ffmpeg_bin=settings.FFMPEG_PATH,
+                            temp_dir=str(render_dir),
+                        )
+                        captions = await caption_engine.transcribe(str(render_file))
+                        if captions:
+                            caption_file = render_dir / f"captioned_{job_id}.mp4"
+                            await caption_engine.burn_captions(
+                                str(render_file), captions, str(caption_file), style=caption_style,
+                                width=render_result.width, height=render_result.height,
+                            )
+                            caption_validation = await OutputValidator(
+                                ffprobe_bin=settings.FFPROBE_PATH,
+                            ).validate(
+                                caption_file, timeline_ir, render_result.render_time_s,
+                                render_result.encoder_used,
+                            )
+                            if not caption_validation.success or not caption_validation.validation_passed:
+                                raise RuntimeError(caption_validation.error_message or "captioned video failed validation")
+                            render_file = caption_file
+                            render_result = caption_validation
+                    except Exception as caption_error:
+                        raise RuntimeError(
+                            "Captions were requested but local transcription or caption rendering failed. "
+                            f"Check the Whisper installation/model ({settings.WHISPER_MODEL_SIZE}): {caption_error}"
+                        ) from caption_error
 
                 # --- Layer 6 & 13: Platform Export ---
                 checkpoint.advance_to(TaskStage.EXPORTING)
@@ -442,6 +503,18 @@ def _storage_path(settings, storage_key: str):
     in a different directory from the one the API wrote to.
     """
     return (settings.storage_root_path / storage_key).resolve()
+
+
+def _style_override(options: dict) -> dict:
+    """Make explicit visual choices outrank learned or inferred style preferences."""
+    override = {}
+    if options.get("color_grade"):
+        override["color_grade"] = options["color_grade"]
+    if options.get("caption_style") and options["caption_style"] != "None":
+        override["captions"] = options["caption_style"]
+    if options.get("music_style"):
+        override["music"] = options["music_style"]
+    return override
 
 
 async def _mark_failed(project_id: str, job_id: str, message: str, trace_id: str | None) -> None:

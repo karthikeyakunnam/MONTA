@@ -167,12 +167,14 @@ class MontaPipeline:
         report, ctx = await self.director.execute(plan, pack)
         return plan, report, ctx
 
-    async def run(self, *, project_id: str, user_id: str, prompt: str, clips: Sequence[ClipSource]) -> PipelineResult:
+    async def run(self, *, project_id: str, user_id: str, prompt: str, clips: Sequence[ClipSource],
+                  target_platform: str | None = None, edit_options: dict | None = None) -> PipelineResult:
         """End-to-end Layers 3–7 under one trace (trace_id / request_id / project_id / hashed user)."""
         with new_trace(project_id=project_id, user_id=user_id), span("pipeline.run", clips=len(clips), prompt_chars=len(prompt)) as sp:
             outcome = "error"
             try:
-                result = await self._run(project_id=project_id, user_id=user_id, prompt=prompt, clips=clips)
+                result = await self._run(project_id=project_id, user_id=user_id, prompt=prompt, clips=clips,
+                                         target_platform=target_platform, edit_options=edit_options or {})
                 outcome = result.report.status if result.story else "no_story"
                 sp.set(outcome=outcome, pattern=result.story.story_pattern if result.story else None)
                 return result
@@ -192,11 +194,13 @@ class MontaPipeline:
                 sp.set(outcome=outcome)
                 m.STAGE_DURATION.observe(time.perf_counter() - t0, stage=name, outcome=outcome)
 
-    async def _run(self, *, project_id: str, user_id: str, prompt: str, clips: Sequence[ClipSource]) -> PipelineResult:
+    async def _run(self, *, project_id: str, user_id: str, prompt: str, clips: Sequence[ClipSource],
+                   target_platform: str | None = None, edit_options: dict | None = None) -> PipelineResult:
         if not clips:
             raise PipelineError("at least one clip is required")
         intent, (metas, failures) = await asyncio.gather(self._stage("interpret", self.interpret(prompt)),
                                                          self._stage("probe", self.probe(clips)))
+        intent = _apply_project_options(intent, target_platform, edit_options or {})
         if not metas:
             raise PipelineError("no clip could be read: " + "; ".join(f"{f.clip_id}: {f.reason}" for f in failures))
         pack = await self._stage("compose", self.compose(project_id=project_id, user_id=user_id, intent=intent, metadata=metas))
@@ -208,7 +212,6 @@ class MontaPipeline:
             validation=ctx.results.get("validate_story") if ok("validate_story") else None,
             probe_failures=tuple(failures),
         )
-
     async def judge_story(self, plan: StoryPlan, pack: ContextPack) -> StoryJudgement:
         """Independent verdict used for best-of selection across retries."""
         with span("story.judge", judge=self.judge.judge_id):
@@ -255,7 +258,7 @@ class MontaPipeline:
         from services.style_engine.mapper import StyleMapper
 
         resolved_style = StyleMapper.resolve_style_for_pack(pack)
-        genre = style or resolved_style.get("music_genre", "cinematic")
+        genre = style or resolved_style.get("music") or resolved_style.get("music_genre", "cinematic")
         studio = AudioStudio()
         return await studio.create_soundtrack(
             timeline=timeline,
@@ -324,7 +327,45 @@ class MontaPipeline:
 
 
 
-# ---------------------------------------------------------------------------- wiring
+# ---------------------------------------------------------------------------- helpers and wiring
+
+
+def _apply_project_options(intent: IntentAnalysis, target_platform: str | None, options: dict) -> IntentAnalysis:
+    """Apply explicit project form choices after prompt inference, with visible provenance."""
+    from shared.contracts.explain import Evidence, Explained
+    from shared.contracts.vocab import CaptionStyle, ColorGrade, MusicStyle, Platform
+
+    value_types = {
+        "target_platform": Platform,
+        "color_grade": ColorGrade,
+        "caption_style": CaptionStyle,
+        "music_style": MusicStyle,
+    }
+    selected = dict(options)
+    if target_platform:
+        selected["target_platform"] = target_platform
+    field_names = {"target_platform", "color_grade", "caption_style", "music_style", "target_duration_s"}
+    payload = intent.model_dump(mode="python")
+    for name, raw_value in selected.items():
+        if name not in field_names or raw_value is None:
+            continue
+        value = value_types[name](raw_value) if name in value_types else float(raw_value)
+        payload[name] = Explained(
+            value=value,
+            confidence=1.0,
+            reasoning="Selected explicitly in the project settings.",
+            evidence=(Evidence(source="project_settings", detail=f"{name}={value}"),),
+        ).model_dump(mode="python")
+
+    overridden = set(selected) & field_names
+    payload["ambiguities"] = tuple(a for a in intent.ambiguities if a.field not in overridden)
+    payload["conflicts"] = tuple(c for c in intent.conflicts if not (set(c.fields) & overridden))
+    payload["missing"] = tuple(m for m in intent.missing if m.field not in overridden)
+    payload["overall_confidence"] = round(
+        sum(payload[k]["confidence"] for k in ("genre", "emotion", "pace", "target_platform")) / 4, 3
+    )
+    payload["revisions"] = tuple(intent.revisions) + ("Explicit project settings applied after prompt inference.",)
+    return IntentAnalysis.model_validate(payload)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:

@@ -28,6 +28,9 @@ const PLATFORMS: Array<{ value: string; label: string }> = [
 
 const PROMPT_MAX = 4000;
 const PROMPT_MIN = 3;
+const COLOR_GRADES = ['natural', 'vibrant', 'warm', 'cool', 'dark', 'orange_teal', 'bw', 'vintage', 'neon', 'high_contrast'];
+const CAPTION_STYLES = ['None', 'Minimal', 'Nike', 'Gymshark', 'David Goggins', 'Cinematic Documentary', 'Motivational', 'Alpha Mindset'];
+const MUSIC_STYLES = ['epic orchestral', 'hard trap', 'cinematic trailer', 'emotional piano', 'hybrid cinematic', 'sports anthem', 'lo-fi', 'acoustic', 'electronic', 'ambient'];
 
 export default function HomePage() {
   const router = useRouter();
@@ -36,6 +39,11 @@ export default function HomePage() {
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
   const [platform, setPlatform] = useState('instagram');
+  const [duration, setDuration] = useState('');
+  const [colorGrade, setColorGrade] = useState('');
+  const [captionStyle, setCaptionStyle] = useState('');
+  const [musicStyle, setMusicStyle] = useState('');
+  const [addMusic, setAddMusic] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [createFailure, setCreateFailure] = useState<Failure | null>(null);
 
@@ -65,6 +73,13 @@ export default function HomePage() {
         title: title.trim(),
         prompt: prompt.trim(),
         target_platform: platform,
+        edit_options: {
+          target_duration_s: duration ? Number(duration) : null,
+          color_grade: colorGrade || null,
+          caption_style: captionStyle || null,
+          music_style: musicStyle || null,
+          add_music: addMusic,
+        },
       });
       // Straight to the dashboard: the next thing the user needs is the uploader.
       router.push(`/projects/${project.id}`);
@@ -120,6 +135,51 @@ export default function HomePage() {
             ))}
           </select>
         </label>
+
+        <details className="edit-options">
+          <summary>Fine tune the edit <span className="muted">· duration, look, audio and captions</span></summary>
+          <div className="grid cols-2" style={{ marginTop: 14 }}>
+            <label className="field">
+              <span>Target duration <span className="muted">(optional)</span></span>
+              <div className="input-suffix">
+                <input type="number" min="5" max="600" step="1" value={duration} placeholder="Choose automatically"
+                  onChange={(e) => setDuration(e.target.value)} />
+                <span>sec</span>
+              </div>
+            </label>
+            <label className="field">
+              <span>Aspect ratio</span>
+              <input value={['instagram', 'tiktok', 'youtube_short'].includes(platform) ? '9:16 · vertical' : '16:9 · landscape'} readOnly />
+            </label>
+            <label className="field">
+              <span>Color grade</span>
+              <select value={colorGrade} onChange={(e) => setColorGrade(e.target.value)}>
+                <option value="">Choose from the footage</option>
+                {COLOR_GRADES.map((value) => <option key={value} value={value}>{value.replace('_', ' ')}</option>)}
+              </select>
+            </label>
+            <label className="field">
+              <span>Captions</span>
+              <select value={captionStyle} onChange={(e) => setCaptionStyle(e.target.value)}>
+                <option value="">Use the prompt</option>
+                {CAPTION_STYLES.map((value) => <option key={value} value={value}>{value === 'None' ? 'Off' : value}</option>)}
+              </select>
+              <span className="muted">Burned into the video using local Whisper transcription.</span>
+            </label>
+            <label className="field">
+              <span>Music style</span>
+              <select value={musicStyle} onChange={(e) => setMusicStyle(e.target.value)} disabled={!addMusic}>
+                <option value="">Choose from the prompt</option>
+                {MUSIC_STYLES.map((value) => <option key={value} value={value}>{value}</option>)}
+              </select>
+            </label>
+            <label className="check-field">
+              <input type="checkbox" checked={addMusic} onChange={(e) => setAddMusic(e.target.checked)} />
+              <span><strong>Add generated background music</strong><small>Original clip audio is kept and mixed underneath.</small></span>
+            </label>
+          </div>
+          <p className="muted" style={{ fontSize: 12.5, marginBottom: 0 }}>Exports are MP4. Platform selection sets the framing and applies that platform’s export profile.</p>
+        </details>
 
         <button type="submit" className="btn" disabled={!canSubmit}>
           {submitting ? 'Creating…' : 'Create project'}

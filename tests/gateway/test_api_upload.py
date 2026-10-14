@@ -59,6 +59,32 @@ async def test_create_read_update_and_list_a_project(harness: AppHarness) -> Non
     assert [p["id"] for p in listing] == [project["id"]]
 
 
+async def test_structured_edit_options_are_saved_and_returned(harness: AppHarness) -> None:
+    options = {
+        "target_duration_s": 24,
+        "color_grade": "vibrant",
+        "caption_style": "Minimal",
+        "music_style": "lo-fi",
+        "add_music": False,
+    }
+    created = await harness.client.post("/projects", json={
+        "title": "Option contract", "prompt": "A calm travel film", "target_platform": "youtube",
+        "edit_options": options,
+    })
+    assert created.status_code == 201, created.text
+    project_id = created.json()["id"]
+    assert created.json()["edit_options"] == options
+
+    detail = await harness.client.get(f"/projects/{project_id}")
+    assert detail.status_code == 200
+    assert detail.json()["edit_options"] == options
+
+    updated_options = {**options, "add_music": True, "caption_style": "None"}
+    updated = await harness.client.patch(f"/projects/{project_id}", json={"edit_options": updated_options})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["edit_options"] == updated_options
+
+
 @pytest.mark.parametrize(
     "body,field",
     [

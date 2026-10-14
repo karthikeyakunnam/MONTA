@@ -16,6 +16,7 @@ the root, so a crafted project or clip id cannot escape the storage directory.
 import asyncio
 import hashlib
 import os
+import shutil
 import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -118,16 +119,30 @@ class LocalMediaStorage:
         return existed
 
     def delete_project(self, project_id: str) -> int:
+        """Remove files owned by a project from every local media area.
+
+        Project scoped outputs are produced outside the uploads adapter, but share the
+        same root and lifecycle. Resolve each path before removal and never recurse
+        through a symlink so a corrupted filesystem entry cannot redirect cleanup.
+        """
         validate_identifier(project_id, "project_id")
-        folder = self.path_for(f"uploads/{project_id}")
-        if not folder.is_dir():
-            return 0
         removed = 0
-        for child in folder.iterdir():
-            if child.is_file():
-                child.unlink()
-                removed += 1
-        folder.rmdir()
+        for area in ("uploads", "renders", "exports", "audio", "checkpoints"):
+            base = self.root / area
+            if base.is_symlink():
+                continue
+            folder = base / project_id
+            if folder.is_symlink():
+                folder.unlink(missing_ok=True)
+                continue
+            try:
+                resolved = folder.resolve()
+                if not resolved.is_relative_to(self.root) or not resolved.is_dir():
+                    continue
+            except OSError:
+                continue
+            removed += sum(1 for path in resolved.rglob("*") if path.is_file())
+            shutil.rmtree(resolved)
         return removed
 
     def sweep_incoming(self, older_than_s: float = 3600) -> int:

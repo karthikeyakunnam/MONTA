@@ -8,7 +8,6 @@ Wired to real FormatExporter and Render records.
 import logging
 import os
 import uuid
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
@@ -19,6 +18,7 @@ from app.config import settings
 from app.dependencies import current_user_id, get_db
 from app.models.project import Project
 from app.models.render import Render, RenderStatus
+from app.services.storage_paths import resolve_stored_mp4
 from services.render_farm.format_exporter import FormatExporter
 
 logger = logging.getLogger("monta.api.export")
@@ -57,9 +57,9 @@ async def export_video(
     if project is None or project.user_id != user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found or unauthorized")
 
-    src_path = Path(render.output_path).resolve()
-    if not src_path.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Master render file missing: {render.output_path}")
+    src_path = resolve_stored_mp4(render.output_path, settings.storage_root_path)
+    if src_path is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Master render file is missing or unavailable on storage")
 
     # Build output path
     export_dir = settings.storage_root_path / "exports" / render.project_id
@@ -119,19 +119,18 @@ async def download_export(
 ):
     """Stream exported video file for playback or download."""
     render = await db.get(Render, export_id)
-    if render is None or not render.output_path:
+    if render is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exported video not found")
 
     project = await db.get(Project, render.project_id)
     if project is None or project.user_id != user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Exported video not found")
 
-    p = Path(render.output_path).resolve()
-    if not p.exists():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Exported video file is missing on storage")
+    p = resolve_stored_mp4(render.output_path, settings.storage_root_path)
+    if p is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Exported video file is missing or unavailable on storage")
 
     return FileResponse(
         path=str(p),
         media_type="video/mp4",
-        filename=f"monta_export_{render.platform or 'video'}_{render.project_id}.mp4",
     )

@@ -11,14 +11,26 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models import ClipStatus, JobState, ProjectStatus
+from shared.contracts.vocab import CaptionStyle, ColorGrade, MusicStyle
 
 PLATFORMS = ("instagram", "tiktok", "youtube_short", "youtube", "general")
+
+
+class EditOptions(BaseModel):
+    """Structured options that the existing story, style, audio and render layers consume."""
+
+    target_duration_s: float | None = Field(None, gt=0, le=600)
+    color_grade: ColorGrade | None = None
+    caption_style: CaptionStyle | None = None
+    music_style: MusicStyle | None = None
+    add_music: bool = True
 
 
 class ProjectCreate(BaseModel):
     title: str = Field(..., min_length=1, max_length=200, description="Project name")
     prompt: str = Field(..., min_length=3, max_length=4000, description="Free-form editing instruction")
     target_platform: Literal[PLATFORMS] = "instagram"  # type: ignore[valid-type]
+    edit_options: EditOptions = Field(default_factory=EditOptions)
     description: str | None = Field(None, max_length=2000)
 
     @field_validator("title", "prompt")
@@ -33,6 +45,7 @@ class ProjectUpdate(BaseModel):
     title: str | None = Field(None, min_length=1, max_length=200)
     prompt: str | None = Field(None, min_length=3, max_length=4000)
     target_platform: Literal[PLATFORMS] | None = None  # type: ignore[valid-type]
+    edit_options: EditOptions | None = None
 
 
 class ValidationIssueOut(BaseModel):
@@ -117,6 +130,7 @@ class ProjectOut(BaseModel):
     status_detail: str | None = None
     raw_prompt: str | None = None
     target_platform: str
+    edit_options: EditOptions = Field(default_factory=EditOptions)
     created_at: datetime | None = None
     updated_at: datetime | None = None
     clip_count: int = 0
@@ -139,6 +153,9 @@ class ProjectDetail(ProjectOut):
     story_score: float | None = None
     render_status: str | None = None
     render_url: str | None = None
+    render_resolution: str | None = None
+    render_duration_s: float | None = None
+    render_size_bytes: int | None = None
 
 
 class ProgressEventOut(BaseModel):
@@ -168,4 +185,7 @@ class HealthOut(BaseModel):
     queue: bool
     storage: bool
     ffprobe: bool
+    ollama_available: bool = False
+    local_ai_ready: bool = False
+    ollama_models: list[str] = Field(default_factory=list)
     detail: dict[str, str] = {}

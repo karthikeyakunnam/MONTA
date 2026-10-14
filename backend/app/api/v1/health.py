@@ -12,6 +12,7 @@ MONTA API — Health
 
 import asyncio
 import logging
+import os
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
@@ -59,6 +60,39 @@ async def health(db: AsyncSession = Depends(get_db), queue: PipelineQueue = Depe
     if not ffprobe_ok:
         detail["ffprobe"] = f"{settings.FFPROBE_PATH} not found; uploads cannot be validated"
 
+    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    ollama_available = False
+    ollama_models: list[str] = []
+    local_ai_ready = False
+    try:
+        import httpx
+        from shared.local_runtime.registry import ModelRegistry
+
+        async with httpx.AsyncClient(timeout=0.5) as client:
+            response = await client.get(f"{ollama_url}/api/tags")
+        response.raise_for_status()
+        ollama_available = True
+        payload = response.json()
+        ollama_models = [
+            str(model.get("name")) for model in payload.get("models", [])
+            if isinstance(model, dict) and model.get("name")
+        ]
+        local_ai_ready = (
+            any(ModelRegistry.get_spec(name).is_vision for name in ollama_models)
+            and any(not ModelRegistry.get_spec(name).is_vision for name in ollama_models)
+        )
+        if not local_ai_ready:
+            detail["ollama"] = (
+                "Ollama is running but MONTA needs at least one local vision model and one text model; "
+                "pull compatible models, such as moondream and qwen2.5:3b."
+            )
+    except Exception:
+        detail["ollama"] = (
+            f"Ollama is unavailable at {ollama_url}; MONTA will use prompt rules and local media signals. "
+            "Start Ollama and install a vision model plus a text model for model-backed analysis."
+        )
+
     healthy = database and storage_ok and ffprobe_ok and queue_ok
     return HealthOut(status="ok" if healthy else "degraded", database=database, queue=queue_ok,
-                     storage=storage_ok, ffprobe=ffprobe_ok, detail=detail)
+                     storage=storage_ok, ffprobe=ffprobe_ok, ollama_available=ollama_available,
+                     local_ai_ready=local_ai_ready, ollama_models=ollama_models, detail=detail)

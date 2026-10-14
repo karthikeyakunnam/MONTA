@@ -27,9 +27,11 @@ from app.schemas.project import (
     ProjectOut,
     ProjectUpdate,
     QuotaClassOut,
+    EditOptions,
 )
 from app.services.progress import ProgressBus
 from app.services.project_service import ProjectConflict, ProjectNotFound, ProjectService, ProjectSummary
+from app.services.storage_paths import resolve_stored_mp4
 from app.services.queue import PipelineQueue, QueueUnavailable
 from services.media_gateway import GatewayLimits, LocalMediaStorage
 
@@ -53,9 +55,14 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
     story = project.story_plan or {}
     judgement = project.story_judgement or {}
     render = summary.latest_render      # eagerly loaded: touching project.renders here would lazy-load
+    render_file = None
+    if render and render.output_path and render.status == "complete":
+        from app.config import settings
+        render_file = resolve_stored_mp4(render.output_path, settings.storage_root_path)
     return ProjectDetail(
         id=project.id, title=project.title, description=project.description, status=ProjectStatus(project.status),
         status_detail=project.status_detail, raw_prompt=project.raw_prompt, target_platform=project.target_platform,
+        edit_options=EditOptions.model_validate(project.edit_options or {}),
         created_at=project.created_at, updated_at=project.updated_at, clip_count=len(usable),
         clips=[ClipOut.model_validate(c) for c in summary.clips],
         jobs=[JobOut.model_validate(j) for j in summary.jobs],
@@ -65,7 +72,10 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
         story_cuts=len(story.get("timeline") or []) or None,
         story_score=judgement.get("overall_score"),
         render_status=getattr(render, "status", None),
-        render_url=f"/api/v1/render/{render.id}/download" if render and render.output_path else None,
+        render_url=f"/api/v1/render/{render.id}/download" if render_file else None,
+        render_resolution=render.resolution if render_file else None,
+        render_duration_s=render.duration if render_file else None,
+        render_size_bytes=render_file.stat().st_size if render_file else None,
     )
 
 
@@ -77,10 +87,12 @@ async def create_project(payload: ProjectCreate, db: AsyncSession = Depends(get_
     project = await _service(db).create_project(
         user_id=user_id, title=payload.title, prompt=payload.prompt,
         target_platform=payload.target_platform, description=payload.description,
+        edit_options=payload.edit_options.model_dump(mode="json"),
     )
     return ProjectOut(id=project.id, title=project.title, description=project.description,
                       status=ProjectStatus(project.status), raw_prompt=project.raw_prompt,
-                      target_platform=project.target_platform, created_at=project.created_at, clip_count=0)
+                      target_platform=project.target_platform, edit_options=payload.edit_options,
+                      created_at=project.created_at, clip_count=0)
 
 
 @router.get("", response_model=list[ProjectOut])
@@ -91,6 +103,7 @@ async def list_projects(limit: int = Query(50, ge=1, le=200), db: AsyncSession =
     return [
         ProjectOut(id=p.id, title=p.title, description=p.description, status=ProjectStatus(p.status),
                    status_detail=p.status_detail, raw_prompt=p.raw_prompt, target_platform=p.target_platform,
+                   edit_options=EditOptions.model_validate(p.edit_options or {}),
                    created_at=p.created_at, updated_at=p.updated_at, clip_count=n)
         for p, n in rows
     ]
@@ -112,7 +125,8 @@ async def update_project(project_id: str, payload: ProjectUpdate, db: AsyncSessi
                          user_id: str = Depends(current_user_id)) -> ProjectOut:
     try:
         project = await _service(db).update(project_id, user_id, title=payload.title, prompt=payload.prompt,
-                                           target_platform=payload.target_platform)
+                                           target_platform=payload.target_platform,
+                                           edit_options=payload.edit_options.model_dump(mode="json") if payload.edit_options else None)
     except ProjectNotFound as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     except ProjectConflict as e:
@@ -120,6 +134,7 @@ async def update_project(project_id: str, payload: ProjectUpdate, db: AsyncSessi
     return ProjectOut(id=project.id, title=project.title, description=project.description,
                       status=ProjectStatus(project.status), status_detail=project.status_detail,
                       raw_prompt=project.raw_prompt, target_platform=project.target_platform,
+                      edit_options=EditOptions.model_validate(project.edit_options or {}),
                       created_at=project.created_at, updated_at=project.updated_at)
 
 

@@ -16,8 +16,10 @@ import { useParams, useRouter } from 'next/navigation';
 import {
   deleteClip,
   deleteProject,
+  formatBytes,
   formatDuration,
   getProject,
+  mediaUrl,
   projectEvents,
   startPipeline,
   uploadLimits,
@@ -128,6 +130,13 @@ export default function ProjectPage() {
   }
 
   const meta = projectStatusMeta(project.status);
+  const editOptions = project.edit_options ?? {
+    target_duration_s: null,
+    color_grade: null,
+    caption_style: null,
+    music_style: null,
+    add_music: true,
+  };
   const usable = project.clips.filter((c) => c.status !== 'rejected');
   const rejected = project.clips.length - usable.length;
   const latestJob = project.jobs[0] ?? null;
@@ -280,15 +289,7 @@ export default function ProjectPage() {
           <div className="card stat">
             <div className="label">Render</div>
             <div className="value">{project.render_status ?? '—'}</div>
-            <div className="foot">
-              {project.render_url ? (
-                <a href={project.render_url} style={{ color: 'var(--color-accent)' }}>
-                  download
-                </a>
-              ) : (
-                'no output yet'
-              )}
-            </div>
+            <div className="foot">{project.render_resolution ?? 'MP4'} · {project.render_duration_s != null ? formatDuration(project.render_duration_s) : 'no output yet'}</div>
           </div>
           <div className="card stat">
             <div className="label">Latest job</div>
@@ -297,6 +298,42 @@ export default function ProjectPage() {
             </div>
             <div className="foot mono">{latestJob ? latestJob.id : 'never run'}</div>
           </div>
+        </div>
+      </section>
+
+      <section className="section" aria-labelledby="render-heading">
+        <div className="section-head">
+          <h2 id="render-heading">Final video</h2>
+          {project.render_size_bytes != null && <span className="hint">{formatBytes(project.render_size_bytes)} MP4</span>}
+        </div>
+        {project.render_url ? (
+          <div className="card render-card">
+            <video className="render-video" controls preload="metadata" src={mediaUrl(project.render_url)}
+              aria-label={`Preview of the rendered video for ${project.title}`} />
+            <div className="row render-meta">
+              <span>{project.render_resolution ?? 'MP4'}</span>
+              <span>{formatDuration(project.render_duration_s)}</span>
+              {project.render_size_bytes != null && <span>{formatBytes(project.render_size_bytes)}</span>}
+              <a className="btn small" href={`${mediaUrl(project.render_url)}?download=true`} download>
+                Download MP4
+              </a>
+            </div>
+          </div>
+        ) : project.render_status === 'complete' ? (
+          <div className="empty" role="status">The job completed, but its MP4 is not available in storage. Run processing again to create a new export.</div>
+        ) : (
+          <div className="empty">The rendered MP4 will appear here when processing finishes.</div>
+        )}
+      </section>
+
+      <section className="section">
+        <div className="section-head"><h2>Edit settings</h2></div>
+        <div className="card settings-summary">
+          <span>{platformAspect(project.target_platform)}</span>
+          <span>{editOptions.target_duration_s ? `${editOptions.target_duration_s}s target` : 'Automatic duration'}</span>
+          <span>{editOptions.color_grade ?? 'Color selected from footage'}</span>
+          <span>{!editOptions.caption_style ? 'Captions from prompt' : editOptions.caption_style === 'None' ? 'Captions off' : `${editOptions.caption_style} captions`}</span>
+          <span>{editOptions.add_music ? `Music on · ${editOptions.music_style ?? 'from prompt'}` : 'Original audio only'}</span>
         </div>
       </section>
 
@@ -359,6 +396,12 @@ function ConnectionPill({ connection }: { connection: string }) {
 function pct(used: number, max: number): number {
   if (max <= 0) return 0;
   return Math.max(0, Math.min(100, (used / max) * 100));
+}
+
+function platformAspect(platform: string): string {
+  return ['instagram', 'tiktok', 'youtube_short'].includes(platform)
+    ? '9:16 · vertical'
+    : '16:9 · landscape';
 }
 
 /** Same event can arrive from the REST replay and the socket; key on time+stage+clip. */

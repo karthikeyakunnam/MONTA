@@ -53,8 +53,13 @@ export function BackendStatus() {
     .filter(([, ok]) => !ok)
     .map(([name]) => name);
 
+  if (!h.local_ai_ready) down.push('local AI models');
   if (down.length === 0) return <Badge tone="ok">API healthy</Badge>;
-  return <Badge tone="warn" title={down.map((d) => `${d}: ${h.detail[d] ?? 'unavailable'}`).join(' · ')}>
-    {down.join(', ')} down
+  const reasons = [
+    ...down.filter((d) => d !== 'local AI models').map((d) => `${d}: ${h.detail[d] ?? 'unavailable'}`),
+    ...(!h.local_ai_ready ? [h.detail.ollama ?? 'Install a vision model and a text model in Ollama for model-backed analysis.'] : []),
+  ];
+  return <Badge tone="warn" title={reasons.join(' · ')}>
+    {down.join(', ')} unavailable
   </Badge>;
 }

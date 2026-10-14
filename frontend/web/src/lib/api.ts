@@ -76,6 +76,7 @@ export interface Project {
   status_detail: string | null;
   raw_prompt: string | null;
   target_platform: string;
+  edit_options: EditOptions;
   created_at: string | null;
   updated_at: string | null;
   clip_count: number;
@@ -92,6 +93,17 @@ export interface ProjectDetail extends Project {
   story_score: number | null;
   render_status: string | null;
   render_url: string | null;
+  render_resolution: string | null;
+  render_duration_s: number | null;
+  render_size_bytes: number | null;
+}
+
+export interface EditOptions {
+  target_duration_s: number | null;
+  color_grade: string | null;
+  caption_style: string | null;
+  music_style: string | null;
+  add_music: boolean;
 }
 
 export interface UploadFileResult {
@@ -146,6 +158,9 @@ export interface Health {
   queue: boolean;
   storage: boolean;
   ffprobe: boolean;
+  ollama_available: boolean;
+  local_ai_ready: boolean;
+  ollama_models: string[];
   detail: Record<string, string>;
 }
 
@@ -230,8 +245,9 @@ export const createProject = (body: {
   title: string;
   prompt: string;
   target_platform?: string;
+  edit_options?: EditOptions;
 }) => request<Project>('/projects', { method: 'POST', body: JSON.stringify(body) });
-export const updateProject = (id: string, body: { title?: string; prompt?: string; target_platform?: string }) =>
+export const updateProject = (id: string, body: { title?: string; prompt?: string; target_platform?: string; edit_options?: EditOptions }) =>
   request<Project>(`/projects/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
 export const deleteProject = (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' });
 export const deleteClip = (projectId: string, clipId: string) =>
@@ -290,6 +306,11 @@ export function progressSocketUrl(projectId: string): string {
   base.pathname = `${base.pathname.replace(/\/$/, '')}/ws/projects/${projectId}`;
   base.search = `?user=${encodeURIComponent(USER_ID)}`;
   return base.toString();
+}
+
+export function mediaUrl(path: string): string {
+  const base = new URL(API_BASE, typeof window === 'undefined' ? 'http://localhost' : window.location.href);
+  return new URL(path, base.origin).toString();
 }
 
 export function formatBytes(bytes: number): string {

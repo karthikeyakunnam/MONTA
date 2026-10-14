@@ -40,7 +40,7 @@ test.describe('MONTA Video Creation Workflow', () => {
     await expect(submitBtn).toBeEnabled();
 
     // Select target platform
-    const platformSelect = page.locator('select');
+    const platformSelect = page.getByLabel(/Target platform/);
     await platformSelect.selectOption('tiktok');
     await expect(platformSelect).toHaveValue('tiktok');
   });
@@ -197,7 +197,7 @@ test.describe('MONTA Video Creation Workflow', () => {
     await expect(page).toHaveURL(/proj_retry_ok/);
   });
 
-  test('4. Full pipeline completion, live progress tracking and export download', async ({ page }) => {
+  test('4. Renders a stubbed ready state with a video preview and download link', async ({ page }) => {
     const projectId = 'proj_render_complete_01';
     let pipelineRunning = false;
 
@@ -320,11 +320,14 @@ test.describe('MONTA Video Creation Workflow', () => {
     await expect(runBtn).toBeVisible();
     await runBtn.click();
 
-    // Verify completion status and download link
-    const downloadLink = page.locator('a[href*="/api/v1/render/"]');
+    // This test stubs the API to exercise the ready-state UI; the real pipeline is covered by backend integration tests.
+    const preview = page.locator('video[aria-label*="Cinematic Reel"]');
+    await expect(preview).toBeVisible();
+    await expect(preview).toHaveAttribute('src', /\/api\/v1\/render\/render_final_123\/download$/);
+    const downloadLink = page.getByRole('link', { name: 'Download MP4' });
     await expect(downloadLink).toBeVisible();
-    await expect(downloadLink).toHaveText('download');
-    await expect(downloadLink).toHaveAttribute('href', '/api/v1/render/render_final_123/download');
+    await expect(downloadLink).toHaveAttribute('href', /\/api\/v1\/render\/render_final_123\/download\?download=true$/);
+    await expect(downloadLink).toHaveAttribute('download', '');
   });
 
   test('5. Handles model unavailable or pipeline startup failure with retry', async ({ page }) => {

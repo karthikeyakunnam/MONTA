@@ -144,6 +144,28 @@ async def test_delete_and_delete_project(storage: LocalMediaStorage) -> None:
     assert not (storage.root / "uploads" / "p1").exists()
 
 
+def test_delete_project_removes_derived_files_and_does_not_follow_symlinks(storage: LocalMediaStorage, tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = outside / "keep.mp4"
+    protected.write_bytes(b"keep")
+
+    (storage.root / "renders").mkdir()
+    (storage.root / "renders" / "p1").symlink_to(outside, target_is_directory=True)
+    for area in ("exports", "audio", "checkpoints"):
+        artifact = storage.root / area / "p1" / "result.bin"
+        artifact.parent.mkdir(parents=True)
+        artifact.write_bytes(b"project output")
+    unrelated = storage.root / "renders" / "p2" / "result.mp4"
+    unrelated.parent.mkdir()
+    unrelated.write_bytes(b"another project")
+
+    assert storage.delete_project("p1") == 3
+    assert not (storage.root / "renders" / "p1").exists()
+    assert protected.read_bytes() == b"keep"
+    assert unrelated.exists()
+
+
 async def test_two_clips_can_share_a_project_directory_concurrently(storage: LocalMediaStorage) -> None:
     """Concurrent uploads into one project must not collide over the directory or temp names."""
     results = await asyncio.gather(*[

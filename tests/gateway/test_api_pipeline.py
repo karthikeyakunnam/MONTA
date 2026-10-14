@@ -79,6 +79,39 @@ async def test_a_dead_broker_keeps_the_job_and_returns_503(harness: AppHarness, 
     assert "failed" in harness.bus.stages()
 
 
+async def test_render_endpoint_supports_inline_preview_and_forced_download(harness: AppHarness) -> None:
+    project_response = await harness.client.post("/projects", json={
+        "title": "Render response", "prompt": "A calm short film", "target_platform": "youtube",
+    })
+    project_id = project_response.json()["id"]
+    render_id = "render_preview_contract"
+    render_path = harness.storage.root / "renders" / project_id / "final.mp4"
+    render_path.parent.mkdir(parents=True)
+    payload = b"test-mp4-bytes" * 256
+    render_path.write_bytes(payload)
+
+    from app.models.render import Render
+
+    async with harness.session_maker() as db:
+        db.add(Render(id=render_id, project_id=project_id, status="complete", resolution="1920x1080",
+                      format="mp4", output_path=str(render_path), file_size_bytes=len(payload), duration=1.0))
+        await db.commit()
+
+    inline = await harness.client.get(f"/render/{render_id}/download")
+    assert inline.status_code == 200
+    assert inline.content == payload
+    assert "content-disposition" not in inline.headers
+
+    download = await harness.client.get(f"/render/{render_id}/download?download=true")
+    assert download.status_code == 200
+    assert download.content == payload
+    assert "attachment" in download.headers["content-disposition"]
+
+    detail = await harness.client.get(f"/render/{render_id}")
+    assert detail.status_code == 200
+    assert "output_path" not in detail.json()
+
+
 async def test_the_pipeline_can_be_started_again_after_a_broker_outage(
     harness: AppHarness, media: MediaFixtures
 ) -> None:

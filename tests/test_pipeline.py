@@ -9,6 +9,7 @@ from orchestration.agents.intelligence import LRUIntelligenceCache, VideoIntelli
 from orchestration.agents.story import DEFAULT_LIBRARY, StoryArchitect, TimelineValidator
 from orchestration.graphs.master_graph import build_master_graph
 from orchestration.pipeline import MontaPipeline
+from orchestration.pipeline import _apply_project_options
 from services.context_composer import ContextComposer
 from services.prompt_engine import IntentEngine
 from shared.contracts.clip import ClipSource
@@ -95,6 +96,23 @@ async def test_signal_only_run_is_degraded_but_complete():
     assert result.story is not None
     assert all(c.provenance.vision_model is None for c in result.context_pack.clip_intelligence.values())
     assert result.story.story_score.confidence < 0.6
+
+
+async def test_explicit_project_options_override_inferred_intent():
+    intent = await IntentEngine().analyze("make a vertical tiktok with no music and warm colors")
+    updated = _apply_project_options(intent, "youtube", {
+        "target_duration_s": 24,
+        "color_grade": "vibrant",
+        "caption_style": "Minimal",
+        "music_style": "lo-fi",
+    })
+
+    assert updated.target_platform.value.value == "youtube"
+    assert updated.target_duration_s.value == 24
+    assert updated.color_grade.value.value == "vibrant"
+    assert updated.caption_style.value.value == "Minimal"
+    assert updated.music_style.value.value == "lo-fi"
+    assert all(e.source == "project_settings" for e in updated.target_platform.evidence)
 
 
 async def test_bad_clips_are_isolated():

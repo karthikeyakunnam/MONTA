@@ -50,6 +50,8 @@ class Project(Base):
     story_plan = Column(JSON, nullable=True)
     story_judgement = Column(JSON, nullable=True)
     target_platform = Column(String(32), nullable=False, default="instagram")
+    # Explicit choices from the project form, consumed by the existing pipeline layers.
+    edit_options = Column(JSON, nullable=False, default=dict)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

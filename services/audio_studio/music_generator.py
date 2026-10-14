@@ -9,7 +9,6 @@ No cloud dependencies required — works 100% locally and offline.
 import asyncio
 import logging
 import os
-import shutil
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -77,6 +76,16 @@ _STYLE_RECIPES["orchestral"] = _STYLE_RECIPES["cinematic"]
 _STYLE_RECIPES["epic"] = _STYLE_RECIPES["intense"]
 _STYLE_RECIPES["bass_heavy"] = _STYLE_RECIPES["hype"]
 _STYLE_RECIPES["beat_sync"] = _STYLE_RECIPES["hype"]
+_STYLE_ALIASES = {
+    "epic_orchestral": "cinematic",
+    "hard_trap": "hype",
+    "cinematic_trailer": "epic",
+    "emotional_piano": "lo_fi",
+    "hybrid_cinematic": "cinematic",
+    "sports_anthem": "hype",
+    "acoustic": "default",
+    "electronic": "hype",
+}
 
 
 
@@ -101,6 +110,7 @@ class MusicGenerator:
         """
         duration = max(1.0, float(duration))
         key = mood.lower().replace("-", "_").replace(" ", "_")
+        key = _STYLE_ALIASES.get(key, key)
         if key not in _STYLE_RECIPES:
             key = style.lower().replace("-", "_").replace(" ", "_")
         if key not in _STYLE_RECIPES:

@@ -20,7 +20,10 @@ from typing import Optional
 
 logger = logging.getLogger("monta.memory.preferences")
 
-DEFAULT_STORAGE_DIR = os.path.join(os.path.expanduser("~"), ".monta", "preferences")
+DEFAULT_STORAGE_DIR = os.getenv(
+    "MONTA_PREFERENCES_DIR",
+    os.path.join(os.path.expanduser("~"), ".monta", "preferences"),
+)
 
 
 class FeedbackRecord:
