@@ -66,3 +66,5 @@ coverage.xml
 # services/edit_executor/luts/*.cube
 .aider*
 bank_project/
+test-results/
+playwright-report/
