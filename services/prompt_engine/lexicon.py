@@ -109,7 +109,8 @@ _TABLES: list[dict[str, list[Signal]]] = [
     }),
     _many(EMOTION, "luxury", {"classy": 1.0, "elegant": 0.9, "sophisticated": 1.0, "sleek": 0.7, "luxurious": 0.5}),
     _many(EMOTION, "uplifting", {
-        "uplifting": 1.0, "happy": 0.8, "positive": 0.8, "feel good": 1.0, "feelgood": 1.0, "cheerful": 1.0, "wholesome": 1.0,
+        "uplifting": 1.0, "happy": 0.8, "happier": 0.9, "happiest": 0.9, "positive": 0.8,
+        "feel good": 1.0, "feelgood": 1.0, "cheerful": 1.0, "wholesome": 1.0,
     }),
     _many(EMOTION, "aggressive", {
         "aggressive": 0.7, "savage": 1.0, "beast": 0.8, "beast mode": 1.2, "angry": 0.9, "rage": 1.0, "menacing": 1.0,

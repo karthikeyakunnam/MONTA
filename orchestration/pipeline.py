@@ -39,8 +39,9 @@ from orchestration.agents.story import DEFAULT_LIBRARY, PatternLibrary, StoryArc
 from services.context_composer import ContextComposer
 from services.prompt_engine import IntentEngine
 from shared.contracts.clip import ClipIntelligence, ClipSource, TechnicalMetadata
+from shared.contracts.base import revalidate
 from shared.contracts.context import ContextPack
-from shared.contracts.director import ExecutionPlan, ExecutionReport, TaskSpec, TaskStatus
+from shared.contracts.director import ExecutionPlan, ExecutionReport, TaskResult, TaskSpec, TaskStatus
 from shared.contracts.evaluation import StoryJudgement
 from shared.contracts.intent import IntentAnalysis
 from shared.contracts.story import StoryPlan, ValidationReport
@@ -168,13 +169,18 @@ class MontaPipeline:
         return plan, report, ctx
 
     async def run(self, *, project_id: str, user_id: str, prompt: str, clips: Sequence[ClipSource],
-                  target_platform: str | None = None, edit_options: dict | None = None) -> PipelineResult:
+                  target_platform: str | None = None, edit_options: dict | None = None,
+                  cached_context: ContextPack | None = None,
+                  reuse_story_plan: StoryPlan | None = None,
+                  revision_base_intent: IntentAnalysis | None = None) -> PipelineResult:
         """End-to-end Layers 3–7 under one trace (trace_id / request_id / project_id / hashed user)."""
         with new_trace(project_id=project_id, user_id=user_id), span("pipeline.run", clips=len(clips), prompt_chars=len(prompt)) as sp:
             outcome = "error"
             try:
                 result = await self._run(project_id=project_id, user_id=user_id, prompt=prompt, clips=clips,
-                                         target_platform=target_platform, edit_options=edit_options or {})
+                                         target_platform=target_platform, edit_options=edit_options or {},
+                                         cached_context=cached_context, reuse_story_plan=reuse_story_plan,
+                                         revision_base_intent=revision_base_intent)
                 outcome = result.report.status if result.story else "no_story"
                 sp.set(outcome=outcome, pattern=result.story.story_pattern if result.story else None)
                 return result
@@ -195,15 +201,61 @@ class MontaPipeline:
                 m.STAGE_DURATION.observe(time.perf_counter() - t0, stage=name, outcome=outcome)
 
     async def _run(self, *, project_id: str, user_id: str, prompt: str, clips: Sequence[ClipSource],
-                   target_platform: str | None = None, edit_options: dict | None = None) -> PipelineResult:
+                   target_platform: str | None = None, edit_options: dict | None = None,
+                   cached_context: ContextPack | None = None,
+                   reuse_story_plan: StoryPlan | None = None,
+                   revision_base_intent: IntentAnalysis | None = None) -> PipelineResult:
         if not clips:
             raise PipelineError("at least one clip is required")
-        intent, (metas, failures) = await asyncio.gather(self._stage("interpret", self.interpret(prompt)),
-                                                         self._stage("probe", self.probe(clips)))
+        intent = await self._stage("interpret", self.interpret(prompt))
+        if revision_base_intent is not None:
+            intent = self.intent_engine.merge_revision(revision_base_intent, intent)
         intent = _apply_project_options(intent, target_platform, edit_options or {})
-        if not metas:
-            raise PipelineError("no clip could be read: " + "; ".join(f"{f.clip_id}: {f.reason}" for f in failures))
-        pack = await self._stage("compose", self.compose(project_id=project_id, user_id=user_id, intent=intent, metadata=metas))
+        cached_by_id = {meta.clip_id: meta for meta in cached_context.video_metadata} if cached_context else {}
+        if cached_context and set(cached_by_id) == {clip.clip_id for clip in clips}:
+            # The worker verified the immutable upload fingerprints before passing this
+            # ContextPack. Keep the current stored paths while reusing source analysis.
+            metadata = [revalidate(cached_by_id[clip.clip_id], path=clip.path) for clip in clips]
+            failures: list[ProbeFailure] = []
+            pack = await self._stage(
+                "compose", self.compose(project_id=project_id, user_id=user_id, intent=intent, metadata=metadata)
+            )
+            pack = revalidate(pack, clip_intelligence=cached_context.clip_intelligence)
+        else:
+            metas, failures = await self._stage("probe", self.probe(clips))
+            if not metas:
+                raise PipelineError("no clip could be read: " + "; ".join(f"{f.clip_id}: {f.reason}" for f in failures))
+            pack = await self._stage(
+                "compose", self.compose(project_id=project_id, user_id=user_id, intent=intent, metadata=metas)
+            )
+
+        if reuse_story_plan is not None and pack.clip_intelligence:
+            analyzed = pack.clip_intelligence
+            reconciled = self.intent_engine.reconcile_with_footage(pack.intent, list(analyzed.values()))
+            pack = await self.composer.enrich_with_footage(pack, reconciled, analyzed)
+            validation = self.validator.validate_plan(reuse_story_plan, pack.clip_intelligence)
+            if not validation.passed:
+                details = "; ".join(
+                    violation.message for violation in validation.violations if violation.severity == "error"
+                )
+                raise PipelineError(f"reused story plan failed revalidation: {details or validation.summary}")
+            plan = self.director.plan(pack)
+            report = ExecutionReport(
+                plan_id=plan.plan_id,
+                status="degraded",
+                results=tuple(TaskResult(
+                    task_id=task.task_id, agent=task.agent, status=TaskStatus.SKIPPED, attempts=0,
+                    duration_ms=0.0,
+                    reasoning="Reused the last successful, validated story plan; only render-level settings changed.",
+                ) for task in plan.execution_plan),
+                duration_ms=0.0,
+                reasoning="Clip analysis and story selection were reused; timeline, audio, and render are rebuilt.",
+            )
+            return PipelineResult(
+                intent=pack.intent, context_pack=pack, plan=plan, report=report,
+                story=reuse_story_plan, validation=validation, probe_failures=tuple(failures),
+            )
+
         plan, report, ctx = await self._stage("execute", self.execute(pack))
         ok = lambda tid: ctx.statuses.get(tid) == TaskStatus.SUCCEEDED  # noqa: E731
         return PipelineResult(
@@ -415,6 +467,8 @@ def build_pipeline(
 
     vision_src = providers.vision_for_analysis
     vision = VisionAnalyzer(vision_src) if vision_src else None
+    local_text_provider = None
+    local_vision_enabled = False
 
     # Auto-detect local vision when no cloud vision provider is configured
     if vision is None and _env_bool("MONTA_LOCAL_VISION", default=True):
@@ -428,6 +482,19 @@ def build_pipeline(
             ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
             runtime = OllamaRuntime(base_url=ollama_url)
             import asyncio
+            async def discover_local_models():
+                try:
+                    available = await runtime.is_available()
+                    return available, await runtime.list_models() if available else []
+                finally:
+                    await runtime.aclose()
+
+            def discover_in_private_loop():
+                # The temporary discovery client must be created, used, and closed on
+                # one loop. Splitting is_available/list_models across asyncio.run calls
+                # binds httpx's pool to a closed loop and silently disables local vision.
+                return asyncio.run(discover_local_models())
+
             try:
                 loop = asyncio.get_running_loop()
             except RuntimeError:
@@ -436,15 +503,10 @@ def build_pipeline(
                 # Inside an already-running event loop (e.g. Celery worker)
                 import concurrent.futures
                 with concurrent.futures.ThreadPoolExecutor() as pool:
-                    is_up = pool.submit(asyncio.run, runtime.is_available()).result(timeout=5)
+                    is_up, models = pool.submit(discover_in_private_loop).result(timeout=20)
             else:
-                is_up = asyncio.run(runtime.is_available())
+                is_up, models = discover_in_private_loop()
             if is_up:
-                if loop and loop.is_running():
-                    with concurrent.futures.ThreadPoolExecutor() as pool:
-                        models = pool.submit(asyncio.run, runtime.list_models()).result(timeout=10)
-                else:
-                    models = asyncio.run(runtime.list_models())
                 installed_names = [m.name for m in models]
                 hw = HardwareDetector.detect()
 
@@ -474,7 +536,9 @@ def build_pipeline(
                     vlm_provider = LocalAIProvider(runtime=vlm_runtime, model=vlm_name, vision=True)
                     text_provider = LocalAIProvider(runtime=text_runtime, model=text_name, vision=False)
 
-                    vision = LocalVisionPipeline(vlm_provider, text_provider)
+                    vision = LocalVisionPipeline(vlm_provider, text_provider, max_frames=2)
+                    local_text_provider = text_provider
+                    local_vision_enabled = True
                     logger.info(
                         "Local vision pipeline enabled: VLM=%s, text=%s",
                         vlm_name, text_name,
@@ -511,11 +575,13 @@ def build_pipeline(
 
     validator = TimelineValidator(library)
     return MontaPipeline(
-        intent_engine=IntentEngine(providers.text_for_extraction, calibrator=calibrator),
+        intent_engine=IntentEngine(providers.text_for_extraction or local_text_provider, calibrator=calibrator),
         composer=ContextComposer(memory=memory, preferences=preferences, learner=NarrativeLearner(memory),
                                  pattern_ids=library.ids, experiment=experiment),
         media=media,
         team=VideoIntelligenceTeam(media, vision=vision, calibrator=calibrator,
+                                   keyframe_count=2 if local_vision_enabled else 4,
+                                   keyframe_width=384 if local_vision_enabled else 512,
                                    cache=LRUIntelligenceCache(int(os.getenv("MONTA_INTEL_CACHE_SIZE", "10000")))),
         architect=StoryArchitect(library=library, validator=validator, refiner=refiner),
         validator=validator,

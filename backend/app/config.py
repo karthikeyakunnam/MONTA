@@ -41,7 +41,11 @@ class Settings(BaseSettings):
         return value
 
     # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8000"]
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "http://localhost:3100", "http://127.0.0.1:3100",
+        "http://localhost:8000",
+    ]
 
     # Database
     DATABASE_URL: str = "postgresql+asyncpg://monta_user:monta_pass@localhost:5432/monta"

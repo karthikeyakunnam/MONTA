@@ -24,6 +24,9 @@ class EditOptions(BaseModel):
     caption_style: CaptionStyle | None = None
     music_style: MusicStyle | None = None
     add_music: bool = True
+    aspect_ratio: Literal["9:16", "16:9", "1:1", "4:5"] | None = Field(
+        default=None, exclude_if=lambda value: value is None,
+    )
 
 
 class ProjectCreate(BaseModel):
@@ -46,6 +49,31 @@ class ProjectUpdate(BaseModel):
     prompt: str | None = Field(None, min_length=3, max_length=4000)
     target_platform: Literal[PLATFORMS] | None = None  # type: ignore[valid-type]
     edit_options: EditOptions | None = None
+
+
+class RevisionCreate(BaseModel):
+    prompt: str = Field(..., min_length=3, max_length=4000)
+    target_platform: Literal[PLATFORMS] = "instagram"  # type: ignore[valid-type]
+    edit_options: EditOptions = Field(default_factory=EditOptions)
+    idempotency_key: str = Field(..., min_length=8, max_length=96)
+
+    @field_validator("prompt", "idempotency_key")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("cannot be blank")
+        return value.strip()
+
+
+class RetryRequest(BaseModel):
+    idempotency_key: str = Field(..., min_length=8, max_length=96)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("cannot be blank")
+        return value.strip()
 
 
 class ValidationIssueOut(BaseModel):
@@ -107,6 +135,13 @@ class JobOut(BaseModel):
     task_id: str | None = None
     attempts: int
     error: str | None = None
+    prompt_version: int | None = None
+    prompt_snapshot: str | None = None
+    target_platform_snapshot: str | None = None
+    edit_options_snapshot: EditOptions | None = None
+    retry_of_job_id: str | None = None
+    revision_mode: str | None = None
+    inherited_requirements: list[str] = Field(default_factory=list)
     created_at: datetime | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
@@ -131,6 +166,7 @@ class ProjectOut(BaseModel):
     raw_prompt: str | None = None
     target_platform: str
     edit_options: EditOptions = Field(default_factory=EditOptions)
+    prompt_version: int = 1
     created_at: datetime | None = None
     updated_at: datetime | None = None
     clip_count: int = 0
@@ -140,6 +176,20 @@ class StoryAct(BaseModel):
     act_id: str
     name: str
     clip_ids: list[str] = []
+
+
+class RenderOut(BaseModel):
+    id: str
+    job_id: str | None = None
+    is_current: bool = False
+    status: str
+    resolution: str
+    format: str
+    platform: str | None = None
+    duration: float | None = None
+    file_size_bytes: int | None = None
+    created_at: datetime | None = None
+    preview_url: str | None = None
 
 
 class ProjectDetail(ProjectOut):
@@ -156,6 +206,7 @@ class ProjectDetail(ProjectOut):
     render_resolution: str | None = None
     render_duration_s: float | None = None
     render_size_bytes: int | None = None
+    renders: list[RenderOut] = []
 
 
 class ProgressEventOut(BaseModel):

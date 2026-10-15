@@ -32,6 +32,29 @@ logger = logging.getLogger("monta.worker.pipeline")
 
 MAX_RETRIES = 2
 RETRY_BACKOFF_S = 10
+DURATION_TOLERANCE_ABS_S = 0.5
+DURATION_TOLERANCE_RELATIVE = 0.05
+
+
+def _duration_limit_notice(requested_s: float | None, planned_s: float, rendered_s: float,
+                           platform_max_s: float | None = None) -> str | None:
+    """Surface material target shortfalls; transition overlap alone is within tolerance.
+
+    MONTA accepts the larger of 0.5s or 5% duration deviation. That matches the
+    output validator and prevents normal xfade overlap from being reported as a
+    source limitation.
+    """
+    if requested_s is None or requested_s <= 0:
+        return None
+    tolerance = max(DURATION_TOLERANCE_ABS_S, requested_s * DURATION_TOLERANCE_RELATIVE)
+    if requested_s - planned_s <= tolerance:
+        return None
+    platform_limited = (platform_max_s is not None and requested_s > platform_max_s + tolerance
+                        and abs(planned_s - platform_max_s) <= max(DURATION_TOLERANCE_ABS_S,
+                                                                   platform_max_s * DURATION_TOLERANCE_RELATIVE))
+    cause = f"the platform limit ({platform_max_s:.1f}s)" if platform_limited else "available footage"
+    return (f"Requested {requested_s:.1f}s; {cause} limited the plan to {planned_s:.1f}s "
+            f"({rendered_s:.1f}s rendered after transitions).")
 
 
 def _settings():
@@ -49,6 +72,10 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
     from app.services.progress import ProgressEvent, Stage, publish_sync
     from orchestration.pipeline import build_pipeline
     from shared.contracts.clip import ClipSource
+    from shared.contracts.context import ContextPack
+    from shared.contracts.intent import IntentAnalysis
+    from shared.contracts.story import StoryPlan
+    from services.prompt_engine.engine import is_incremental_revision
     from shared.observability.context import bind, new_trace
     from shared.observability.logging import configure_logging
 
@@ -70,24 +97,94 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 if project is None:
                     raise LookupError(f"project {project_id} no longer exists")
                 job = await db.get(Job, job_id)
+                if job is None:
+                    raise LookupError(f"job {job_id} no longer exists")
+                if job.state in (JobState.CANCELLED.value, JobState.SUCCEEDED.value, JobState.FAILED.value):
+                    return {"project_id": project_id, "job_id": job_id, "status": job.state,
+                            "detail": "terminal job ignored by worker"}
+                if job.prompt_version is not None and int(job.prompt_version) != int(project.prompt_version or 1):
+                    job.state = JobState.CANCELLED.value
+                    job.error = "Superseded by a newer project prompt version before worker start."
+                    job.finished_at = datetime.now(timezone.utc)
+                    await db.commit()
+                    return {"project_id": project_id, "job_id": job_id, "status": "stale"}
+                prior_judgement = project.story_judgement if isinstance(project.story_judgement, dict) else {}
+                prior_current_render_id = prior_judgement.get("current_render_id")
                 clips = list((await db.execute(
                     select(Clip).where(Clip.project_id == project_id, Clip.status != ClipStatus.REJECTED.value)
                     .order_by(Clip.created_at)
                 )).scalars())
                 if not clips:
                     raise ValueError("this project has no usable clips")
-                if job is not None:
-                    job.state = JobState.RUNNING.value
-                    job.stage = Stage.ANALYZING.value
-                    job.attempts = (job.attempts or 0) + 1
-                    job.started_at = datetime.now(timezone.utc)
+                job.state = JobState.RUNNING.value
+                job.stage = Stage.ANALYZING.value
+                job.attempts = (job.attempts or 0) + 1
+                job.started_at = datetime.now(timezone.utc)
                 project.status = ProjectStatus.ANALYZING.value
                 project.status_detail = f"analyzing {len(clips)} clips"
-                prompt = project.raw_prompt or ""
+                prompt = job.prompt_snapshot if job.prompt_snapshot is not None else (project.raw_prompt or "")
                 user_id = project.user_id
-                target_platform = project.target_platform
-                edit_options = dict(project.edit_options or {})
+                target_platform = job.target_platform_snapshot or project.target_platform
+                edit_options = dict(job.edit_options_snapshot or project.edit_options or {})
+                prompt_version = int(job.prompt_version or project.prompt_version or 1)
                 sources = [ClipSource(clip_id=c.id, path=str(_storage_path(settings, c.storage_key))) for c in clips]
+
+                cached_context = None
+                cache_reused = False
+                try:
+                    candidate = ContextPack.model_validate(project.context) if project.context else None
+                    if candidate and {meta.clip_id for meta in candidate.video_metadata} == {c.id for c in clips}:
+                        from orchestration.agents.intelligence.media import fingerprint_file
+                        metadata = {meta.clip_id: meta for meta in candidate.video_metadata}
+                        cache_reused = all(
+                            metadata[c.id].fingerprint == fingerprint_file(str(_storage_path(settings, c.storage_key)))
+                            for c in clips
+                        )
+                        if cache_reused:
+                            cached_context = candidate
+                except Exception as cache_error:
+                    logger.info("clip-analysis cache invalidated", extra={"project_id": project_id,
+                                                                          "reason": str(cache_error)[:240]})
+
+                previous_success = (await db.execute(
+                    select(Job).where(Job.project_id == project_id, Job.state == JobState.SUCCEEDED.value,
+                                      Job.id != job_id)
+                    .order_by(Job.prompt_version.desc(), Job.created_at.desc(), Job.id.desc()).limit(1)
+                )).scalar_one_or_none()
+                revision_mode = "initial"
+                revision_base_job_id = None
+                revision_base_intent = None
+                if previous_success:
+                    revision_base_job_id = previous_success.id
+                    previous_prompt = previous_success.prompt_snapshot or ""
+                    if previous_prompt == prompt:
+                        revision_mode = "same_prompt"
+                    elif is_incremental_revision(previous_prompt, prompt):
+                        revision_mode = "incremental"
+                        prior_result = previous_success.result if isinstance(previous_success.result, dict) else {}
+                        prior_intent = prior_result.get("intent_snapshot")
+                        if prior_intent:
+                            try:
+                                revision_base_intent = IntentAnalysis.model_validate(prior_intent)
+                            except Exception as intent_error:
+                                logger.warning("prior revision intent unavailable for merge: %s", intent_error)
+                                revision_mode = "incremental_without_base"
+                    else:
+                        revision_mode = "replacement"
+                reuse_story = None
+                if previous_success and isinstance(previous_success.result, dict):
+                    same_story_inputs = (
+                        previous_success.prompt_snapshot == prompt
+                        and previous_success.target_platform_snapshot == target_platform
+                        and float((previous_success.edit_options_snapshot or {}).get("target_duration_s") or 0)
+                        == float(edit_options.get("target_duration_s") or 0)
+                    )
+                    story_data = previous_success.result.get("story_plan_snapshot")
+                    if same_story_inputs and story_data and cache_reused:
+                        try:
+                            reuse_story = StoryPlan.model_validate(story_data)
+                        except Exception:
+                            reuse_story = None
                 await db.commit()
 
             from shared.task_persistence import TaskPersistence, TaskStage
@@ -101,6 +198,44 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
             publish(Stage.ANALYZING, f"Analyzing {len(sources)} clips", detail={"clips": len(sources)})
 
             pipeline = build_pipeline()
+            crop_probe_failures: list[str] = []
+            vision_reanalysis_ids: list[str] = []
+            reused_clip_analysis_ids = set(cached_context.clip_intelligence) if cached_context else set()
+
+            # Old ContextPacks predate stable active-picture detection. Refresh only
+            # that inexpensive technical metadata while retaining fingerprint-valid
+            # semantic analysis; a completed scan with no crop is cached explicitly.
+            if cached_context:
+                old_metadata = {meta.clip_id: meta for meta in cached_context.video_metadata}
+                crop_sources = [source for source in sources
+                                if not old_metadata[source.clip_id].content_crop_analyzed]
+                if crop_sources:
+                    refreshed, probe_failures = await pipeline.probe(crop_sources)
+                    refreshed_by_id = {meta.clip_id: meta for meta in refreshed}
+                    source_by_id = {source.clip_id: source for source in sources}
+                    crop_probe_failures = [failure.clip_id for failure in probe_failures]
+                    metadata = tuple(
+                        refreshed_by_id.get(meta.clip_id, meta).model_copy(
+                            update={"path": source_by_id[meta.clip_id].path}
+                        ) for meta in cached_context.video_metadata
+                    )
+                    cached_context = cached_context.model_copy(update={"video_metadata": metadata})
+
+            # A fingerprint proves the uploaded bytes are unchanged, but it cannot
+            # make signal-only legacy analysis equivalent to newly available vision.
+            # Re-analyze just those clips when the real local vision stack is ready.
+            if cached_context and pipeline.director.planner.vision_enabled:
+                vision_reanalysis_ids = [clip_id for clip_id, intelligence in cached_context.clip_intelligence.items()
+                                         if not intelligence.provenance.vision_model]
+                if vision_reanalysis_ids:
+                    retained = {clip_id: intelligence for clip_id, intelligence
+                                in cached_context.clip_intelligence.items()
+                                if clip_id not in set(vision_reanalysis_ids)}
+                    cached_context = cached_context.model_copy(update={"clip_intelligence": retained})
+                    reuse_story = None
+            reused_clip_analysis_ids = set(cached_context.clip_intelligence) if cached_context else set()
+            cache_reused = bool(reused_clip_analysis_ids)
+
             analyzed = {"count": 0}
             total = len(sources)
 
@@ -122,12 +257,39 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
 
             pipeline.director.executor._on_event = on_event
             result = await pipeline.run(project_id=project_id, user_id=user_id, prompt=prompt, clips=sources,
-                                        target_platform=target_platform, edit_options=edit_options)
+                                        target_platform=target_platform, edit_options=edit_options,
+                                        cached_context=cached_context, reuse_story_plan=reuse_story,
+                                        revision_base_intent=revision_base_intent)
 
             async with session_maker() as db:
                 project = await db.get(Project, project_id)
                 job = await db.get(Job, job_id)
+                if (job is None or job.state != JobState.RUNNING.value or
+                        (job.prompt_version is not None and int(job.prompt_version) != int(project.prompt_version or 1))):
+                    return {"project_id": project_id, "job_id": job_id, "status": "stale",
+                            "detail": "revision changed before pipeline results were persisted"}
                 intent = result.intent.model_dump(mode="json")
+                merge_note = next((note for note in result.intent.revisions
+                                   if "targeted revision merged" in note), "")
+                inherited_requirements = []
+                if merge_note:
+                    inherited_text = merge_note.partition("inherited unchanged requirements:")[2]
+                    inherited_requirements = [item.strip() for item in inherited_text.split(",")
+                                              if item.strip() and item.strip() != "none"]
+                job.result = {
+                    "prompt_version": prompt_version,
+                    "revision_mode": revision_mode,
+                    "revision_base_job_id": revision_base_job_id,
+                    "inherited_requirements": inherited_requirements,
+                    "intent_snapshot": intent,
+                    "story_plan_snapshot": result.story.model_dump(mode="json") if result.story else None,
+                    "input_sha256": {c.id: c.sha256 for c in clips},
+                    "reused_clip_analysis": cache_reused,
+                    "reused_clip_analysis_ids": sorted(reused_clip_analysis_ids),
+                    "vision_reanalysis_ids": sorted(vision_reanalysis_ids),
+                    "crop_probe_failures": crop_probe_failures,
+                    "reused_story_plan": reuse_story is not None,
+                }
                 project.parsed_intent = intent
                 # Keep the complete ContextPack, including real source metadata and
                 # intelligence provenance, as the first inspectable M3 artifact.
@@ -147,7 +309,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                                             "camera_motion": intelligence.camera_motion.value}
                     clip.emotion_tags = [intelligence.emotion.value] if intelligence.emotion else None
 
-                failures = [r.task_id for r in result.report.results if r.status.value in ("failed", "skipped")]
+                failures = [r.task_id for r in result.report.results if r.status.value == "failed"]
                 if result.story is None:
                     project.status = ProjectStatus.FAILED.value
                     project.status_detail = f"story design did not complete: {result.report.reasoning}"
@@ -162,7 +324,10 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 story = result.story.model_dump(mode="json")
                 judgement = await pipeline.judge_story(result.story, result.context_pack)
                 project.story_plan = story
-                project.story_judgement = judgement.model_dump(mode="json")
+                project.story_judgement = {
+                    **judgement.model_dump(mode="json"),
+                    **({"current_render_id": prior_current_render_id} if prior_current_render_id else {}),
+                }
 
                 # Advance task checkpoint to timeline generation
                 checkpoint.advance_to(TaskStage.TIMELINE_GENERATION)
@@ -220,7 +385,16 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             feedback=critic_verdict.get("feedback", []),
                             scores=critic_verdict.get("scores", {}),
                         )
-                        focus_desc = ", ".join(strategy["focus_areas"]) or "narrative pacing"
+                        applied_focus = strategy.get("implemented_focus_areas", [])
+                        deferred_focus = strategy.get("deferred_focus_areas", [])
+                        if not applied_focus:
+                            publish(
+                                Stage.TIMELINE_BUILDING,
+                                "Critic found no weak story or pacing dimension that this stage can revise",
+                                detail={"attempt": attempt, "strategy": strategy},
+                            )
+                            break
+                        focus_desc = ", ".join(applied_focus)
                         publish(
                             Stage.STORY_BUILDING,
                             f"Critic revision {attempt}/{RetryManager.MAX_RETRIES}: targeting {focus_desc}",
@@ -371,6 +545,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 if target_platform in ("tiktok", "instagram", "youtube_short", "twitter"):
                     try:
                         from services.render_farm.format_exporter import FormatExporter
+                        from services.render_farm.output_validator import OutputValidator
                         publish(Stage.RENDERING, f"Exporting optimized {target_platform} format")
                         export_file = render_dir / f"export_{target_platform}_{job_id}.mp4"
                         exporter = FormatExporter()
@@ -380,8 +555,24 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             platform=target_platform,
                             resolution="1080p",
                         )
+                        export_validation = await OutputValidator(ffprobe_bin=settings.FFPROBE_PATH).validate(
+                            platform_export_path, timeline_ir, render_result.render_time_s, render_result.encoder_used,
+                        )
+                        if not export_validation.success or not export_validation.validation_passed:
+                            raise RuntimeError(export_validation.error_message or "platform export failed validation")
                     except Exception as exp_err:
-                        logger.warning("Platform export failed, master render preserved: %s", exp_err)
+                        logger.warning("Platform export failed validation: %s", exp_err)
+                        raise RuntimeError(f"The {target_platform} export could not be validated: {exp_err}") from exp_err
+
+                # Re-read durable state after the long FFmpeg phase. A cancelled or
+                # superseded task may leave an unreferenced file, but can never publish
+                # it as the project's current result.
+                await db.refresh(job)
+                await db.refresh(project)
+                if (job.state != JobState.RUNNING.value or
+                        (job.prompt_version is not None and int(job.prompt_version) != int(project.prompt_version or 1))):
+                    return {"project_id": project_id, "job_id": job_id, "status": "stale",
+                            "detail": "job was cancelled or superseded before render commit"}
 
                 checkpoint.mark_complete(artifacts={
                     "master_mp4": str(render_file),
@@ -402,6 +593,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                         "fps": render_result.fps,
                         "video_codec": render_result.video_codec,
                         "audio_codec": render_result.audio_codec,
+                        "audio_duration_s": render_result.audio_duration_s,
                         "encoder": render_result.encoder_used,
                         "file_size_bytes": render_result.file_size_bytes,
                         "validation_passed": render_result.validation_passed,
@@ -417,6 +609,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 render_row = Render(
                     id=render_id,
                     project_id=project_id,
+                    job_id=job_id,
                     status=RenderStatus.COMPLETE.value,
                     resolution=f"{render_result.width}x{render_result.height}",
                     format="mp4",
@@ -426,8 +619,45 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     progress_percent=100.0,
                     started_at=job.started_at if job else None,
                     completed_at=datetime.now(timezone.utc),
+                    created_at=datetime.now(timezone.utc),
                 )
                 db.add(render_row)
+
+                # Compare critic scores only when every score input is identical.
+                # A changed prompt or option set has no comparable baseline.
+                from app.models.render import RenderStatus
+                from app.services.storage_paths import resolve_stored_mp4
+
+                prior_render = await db.get(Render, prior_current_render_id) if prior_current_render_id else None
+                if prior_render is None and previous_success and isinstance(previous_success.result, dict):
+                    previous_render_id = previous_success.result.get("render_id")
+                    prior_render = await db.get(Render, previous_render_id) if previous_render_id else None
+                prior_job = await db.get(Job, prior_render.job_id) if prior_render and prior_render.job_id else None
+                prior_result = prior_job.result if prior_job and isinstance(prior_job.result, dict) else {}
+                prior_critic_score = prior_result.get("critic_score")
+                current_critic_score = critic_verdict.get("overall_score") if critic_verdict else None
+                current_sha = {clip.id: clip.sha256 for clip in clips}
+                prior_sha = prior_result.get("input_sha256")
+                same_evaluation_inputs = bool(
+                    prior_job and prior_sha == current_sha
+                    and prior_job.prompt_snapshot == prompt
+                    and prior_job.target_platform_snapshot == target_platform
+                    and (prior_job.edit_options_snapshot or {}) == edit_options
+                )
+                prior_render_accessible = False
+                if prior_render and prior_render.status == RenderStatus.COMPLETE.value and prior_render.output_path:
+                    try:
+                        prior_path = resolve_stored_mp4(prior_render.output_path, settings.storage_root_path)
+                        prior_render_accessible = prior_path.is_file() and prior_path.stat().st_size >= 1024
+                    except (OSError, ValueError):
+                        prior_render_accessible = False
+                retain_prior_render = bool(
+                    same_evaluation_inputs and prior_render_accessible
+                    and isinstance(prior_critic_score, (int, float))
+                    and isinstance(current_critic_score, (int, float))
+                    and float(current_critic_score) < float(prior_critic_score)
+                )
+                chosen_current_render_id = prior_render.id if retain_prior_render else render_id
 
                 if platform_export_path and os.path.exists(platform_export_path):
                     export_render_id = str(uuid4())
@@ -435,6 +665,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     export_row = Render(
                         id=export_render_id,
                         project_id=project_id,
+                        job_id=job_id,
                         status=RenderStatus.COMPLETE.value,
                         resolution="1080x1920" if target_platform in ("tiktok", "instagram", "youtube_short") else f"{render_result.width}x{render_result.height}",
                         format="mp4",
@@ -445,24 +676,64 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                         progress_percent=100.0,
                         started_at=job.started_at if job else None,
                         completed_at=datetime.now(timezone.utc),
+                        created_at=datetime.now(timezone.utc),
                     )
                     db.add(export_row)
 
                 project.status = ProjectStatus.COMPLETE.value
                 project.status_detail = (f"video ready: {render_result.duration_s:.1f}s, "
                                          f"{render_result.width}x{render_result.height}, {render_result.file_size_mb}MB")
+                requested_duration_s = active_story.requested_duration_s
+                duration_notice = _duration_limit_notice(
+                    requested_duration_s,
+                    timeline_ir.duration_s,
+                    render_result.duration_s,
+                    result.context_pack.platform.max_duration_s if result.context_pack.platform else None,
+                )
+                if duration_notice:
+                    project.status_detail += f" · {duration_notice}"
+                if retain_prior_render:
+                    project.status_detail += (
+                        f" · Previous render retained: critic score {float(current_critic_score):.2f} "
+                        f"was below {float(prior_critic_score):.2f} for the same prompt and options."
+                    )
+                project.story_judgement = {
+                    **(project.story_judgement or {}),
+                    "current_render_id": chosen_current_render_id,
+                }
+                if not render_file.is_file() or render_file.stat().st_size < 1024:
+                    raise RuntimeError("The validated MP4 disappeared or became inaccessible before completion.")
                 if job is not None:
                     job.state = JobState.SUCCEEDED.value
                     job.stage = Stage.COMPLETE.value
                     job.finished_at = datetime.now(timezone.utc)
-                    job.result = {"story_pattern": active_story.story_pattern,
+                    job.result = {**(job.result or {}),
+                                  "story_pattern": active_story.story_pattern,
                                   "cuts": len(active_story.timeline),
                                   "duration_s": render_result.duration_s,
+                                  "audio_duration_s": render_result.audio_duration_s,
+                                  "requested_duration_s": requested_duration_s,
+                                  "planned_duration_s": timeline_ir.duration_s,
+                                  "expected_render_duration_s": timeline_ir.render_duration_s,
+                                  "duration_tolerance_s": (max(DURATION_TOLERANCE_ABS_S,
+                                                                requested_duration_s * DURATION_TOLERANCE_RELATIVE)
+                                                            if requested_duration_s is not None else None),
+                                  "duration_limited": duration_notice is not None,
+                                  "duration_notice": duration_notice,
+                                  "transition_overlap_s": timeline_ir.duration_s - timeline_ir.render_duration_s,
                                   "render_id": render_id,
                                   "output_path": str(render_file),
                                   "platform_export": platform_export_path,
                                   "judge_score": judgement.overall_score,
                                   "critic_score": critic_verdict.get("overall_score") if critic_verdict else None,
+                                  "previous_critic_score": prior_critic_score if same_evaluation_inputs else None,
+                                  "render_promoted": not retain_prior_render,
+                                  "retained_render_id": prior_render.id if retain_prior_render else None,
+                                  "reused_clip_analysis": cache_reused,
+                                  "reused_clip_analysis_ids": sorted(reused_clip_analysis_ids),
+                                  "vision_reanalysis_ids": sorted(vision_reanalysis_ids),
+                                  "crop_probe_failures": crop_probe_failures,
+                                  "reused_story_plan": reuse_story is not None,
                                   "degraded_tasks": failures,
                                   "artifacts": {
                                       "context_pack": "projects.context",
@@ -514,6 +785,8 @@ def _style_override(options: dict) -> dict:
         override["captions"] = options["caption_style"]
     if options.get("music_style"):
         override["music"] = options["music_style"]
+    if options.get("aspect_ratio"):
+        override["aspect_ratio"] = options["aspect_ratio"]
     return override
 
 
@@ -524,25 +797,39 @@ async def _mark_failed(project_id: str, job_id: str, message: str, trace_id: str
     from app.services.progress import ProgressEvent, Stage, publish_sync
 
     settings = _settings()
+    should_publish = False
     engine = create_async_engine(settings.DATABASE_URL)
     try:
         async with async_sessionmaker(engine, expire_on_commit=False)() as db:
             project = await db.get(Project, project_id)
-            if project is not None:
+            job = await db.get(Job, job_id)
+            if job is None or job.state in (JobState.CANCELLED.value, JobState.SUCCEEDED.value,
+                                            JobState.FAILED.value):
+                return
+            if project is not None and (job.prompt_version is None or
+                                        int(job.prompt_version) == int(project.prompt_version or 1)):
                 project.status = ProjectStatus.FAILED.value
                 project.status_detail = message[:500]
-            job = await db.get(Job, job_id)
+                should_publish = True
+            elif project is not None:
+                job.state = JobState.CANCELLED.value
+                job.error = "Superseded by a newer project prompt version."
+                job.finished_at = datetime.now(timezone.utc)
+                await db.commit()
+                return
             if job is not None:
                 job.state = JobState.FAILED.value
                 job.error = message[:2000]
                 job.finished_at = datetime.now(timezone.utc)
+                should_publish = True
             await db.commit()
     finally:
         await engine.dispose()
-    publish_sync(settings.REDIS_URL, settings.PROGRESS_CHANNEL_PREFIX, settings.PROGRESS_HISTORY_KEY_PREFIX,
-                 settings.PROGRESS_HISTORY_LENGTH,
-                 ProgressEvent(project_id=project_id, stage=Stage.FAILED, message=message[:500], job_id=job_id,
-                               trace_id=trace_id))
+    if should_publish:
+        publish_sync(settings.REDIS_URL, settings.PROGRESS_CHANNEL_PREFIX, settings.PROGRESS_HISTORY_KEY_PREFIX,
+                     settings.PROGRESS_HISTORY_LENGTH,
+                     ProgressEvent(project_id=project_id, stage=Stage.FAILED, message=message[:500], job_id=job_id,
+                                   trace_id=trace_id))
 
 
 @app.task(bind=True, name="tasks.run_pipeline", max_retries=MAX_RETRIES, acks_late=True)

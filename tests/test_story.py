@@ -246,6 +246,26 @@ def test_repair_bridges_a_spike_with_an_unused_clip():
     assert log and "added bridge" in log[0]
 
 
+def test_ordered_emotional_arc_is_applied_to_start_middle_and_end_acts():
+    from orchestration.agents.story.selection import adapt_pattern
+
+    clips = gym_clips()
+    pack = make_pack(
+        "a sad start, hopeful middle, and happy ending for this transformation",
+        clips,
+        reconcile=False,
+    )
+    beats = {beat.section: beat for beat in pack.intent.pacing_arc}
+    assert beats["start"].emotion == Emotion.EMOTIONAL
+    assert beats["middle"].emotion == Emotion.INSPIRING
+    assert beats["end"].emotion == Emotion.UPLIFTING
+
+    adapted = adapt_pattern(DEFAULT_LIBRARY.get("transformation"), pack, clips)
+    assert Emotion.EMOTIONAL in adapted.acts[0].preferred_emotions
+    assert Emotion.INSPIRING in adapted.acts[1].preferred_emotions
+    assert Emotion.UPLIFTING in adapted.acts[-1].preferred_emotions
+
+
 # ---------------------------------------------------------------- LLM refinement
 
 def _refinement(plan, acts=None, hero=None, summary="tighter escalation"):

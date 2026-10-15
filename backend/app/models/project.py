@@ -10,7 +10,7 @@ by ``ProjectStatus`` so new states ship without a database enum migration.
 
 import enum
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -52,6 +52,7 @@ class Project(Base):
     target_platform = Column(String(32), nullable=False, default="instagram")
     # Explicit choices from the project form, consumed by the existing pipeline layers.
     edit_options = Column(JSON, nullable=False, default=dict)
+    prompt_version = Column(Integer, nullable=False, default=1)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

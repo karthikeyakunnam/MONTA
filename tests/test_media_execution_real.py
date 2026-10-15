@@ -16,6 +16,8 @@ from services.edit_executor.executor import (
 )
 from services.render_farm.output_validator import OutputValidator
 from services.render_farm.renderer import MediaRenderer
+from orchestration.agents.intelligence.media import FFmpegMediaBackend
+from shared.contracts.clip import ClipSource
 from shared.contracts.timeline import (
     AspectRatio,
     ColorAdjustment,
@@ -45,6 +47,77 @@ def synthetic_media(tmp_path: Path):
     clip1 = _generate_synthetic_clip(tmp_path / "clip1.mp4", duration_s=4.0, color="blue", freq=440)
     clip2 = _generate_synthetic_clip(tmp_path / "clip2.mp4", duration_s=4.0, color="green", freq=880)
     return clip1, clip2
+
+
+@pytest.mark.asyncio
+async def test_probe_detects_stable_letterbox_without_treating_dark_scene_edges_as_matte(tmp_path: Path):
+    boxed = tmp_path / "letterboxed_portrait.mp4"
+    subprocess.check_call([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+        "color=c=red:size=464x256:rate=24:duration=2", "-vf", "pad=478:850:8:298:black",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(boxed),
+    ])
+    backend = FFmpegMediaBackend(timeout_s=30, allowed_roots=(str(tmp_path),))
+    metadata = await backend.probe(ClipSource(clip_id="boxed", path=str(boxed)))
+    assert metadata.content_crop == (464, 256, 8, 298)
+    assert metadata.content_crop_analyzed is True
+
+
+@pytest.mark.asyncio
+async def test_probe_marks_no_crop_as_analyzed(tmp_path: Path):
+    portrait = tmp_path / "full_portrait.mp4"
+    subprocess.check_call([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+        "color=c=red:size=360x640:rate=24:duration=1", "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", str(portrait),
+    ])
+    backend = FFmpegMediaBackend(timeout_s=30, allowed_roots=(str(tmp_path),))
+    metadata = await backend.probe(ClipSource(clip_id="portrait", path=str(portrait)))
+    assert metadata.content_crop is None
+    assert metadata.content_crop_analyzed is True
+
+
+@pytest.mark.asyncio
+async def test_detected_portrait_matte_is_removed_in_the_actual_render(tmp_path: Path):
+    boxed = tmp_path / "portrait_with_wide_active_picture.mp4"
+    subprocess.check_call([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+        "color=c=red:size=464x256:rate=24:duration=2", "-vf", "pad=478:850:8:298:black",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", str(boxed),
+    ])
+    metadata = await FFmpegMediaBackend(timeout_s=30, allowed_roots=(str(tmp_path),)).probe(
+        ClipSource(clip_id="boxed", path=str(boxed))
+    )
+    assert metadata.content_crop == (464, 256, 8, 298)
+
+    def timeline(crop):
+        segment = TimelineSegmentIR(
+            segment_id="boxed-shot", clip_id="boxed", source_path=str(boxed), source_in_ms=0,
+            source_out_ms=1500, timeline_start_ms=0, timeline_end_ms=1500, source_crop=crop, has_audio=False,
+        )
+        return TimelineIR(
+            project_id=f"crop-{bool(crop)}", width=270, height=480, fps=24,
+            aspect_ratio=AspectRatio.PORTRAIT_9_16, scale_mode=ScaleMode.FIT,
+            video_segments=(segment,), total_duration_ms=1500,
+        )
+
+    renderer = MediaRenderer()
+    baseline_path, cropped_path = tmp_path / "fit_with_matte.mp4", tmp_path / "crop_to_active_picture.mp4"
+    baseline = await renderer.render(timeline(None), output_path=baseline_path)
+    cropped = await renderer.render(timeline(metadata.content_crop), output_path=cropped_path)
+    assert baseline.success and baseline.validation_passed
+    assert cropped.success and cropped.validation_passed
+
+    def black_fraction(path: Path) -> float:
+        decoded = subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", "1", "-i", str(path),
+            "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        ], check=True, capture_output=True).stdout
+        pixels = [decoded[i:i + 3] for i in range(0, len(decoded), 3)]
+        return sum(all(channel < 24 for channel in pixel) for pixel in pixels) / len(pixels)
+
+    assert black_fraction(baseline_path) > 0.60
+    assert black_fraction(cropped_path) < 0.02
 
 
 @pytest.mark.asyncio

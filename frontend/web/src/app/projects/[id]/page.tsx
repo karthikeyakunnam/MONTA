@@ -10,20 +10,25 @@
  * whole class of bug where an optimistic UI and the server disagree about what exists.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useParams, useRouter } from 'next/navigation';
 import {
   deleteClip,
   deleteProject,
+  cancelRevision,
+  createRevision,
   formatBytes,
   formatDuration,
   getProject,
   mediaUrl,
   projectEvents,
+  retryRevision,
   startPipeline,
   uploadLimits,
   type ProgressEvent,
+  type EditOptions,
+  type Job,
   type ProjectDetail,
   type UploadLimits,
 } from '@/lib/api';
@@ -37,6 +42,23 @@ import { Uploader } from '@/components/Uploader';
 import { useProgressSocket } from '@/hooks/useProgressSocket';
 import { jobStateTone, projectStatusMeta } from '@/lib/status';
 
+const COLOR_GRADES = ['natural', 'vibrant', 'warm', 'cool', 'dark', 'orange_teal', 'bw', 'vintage', 'neon', 'high_contrast'];
+const CAPTION_STYLES = ['None', 'Minimal', 'Nike', 'Gymshark', 'David Goggins', 'Cinematic Documentary', 'Motivational', 'Alpha Mindset'];
+const MUSIC_STYLES = ['epic orchestral', 'hard trap', 'cinematic trailer', 'emotional piano', 'hybrid cinematic', 'sports anthem', 'lo-fi', 'acoustic', 'electronic', 'ambient'];
+const ACTIVE_JOB_STATES = ['pending', 'queued', 'running'];
+const defaultAspect = (platform: string) => ['instagram', 'tiktok', 'youtube_short'].includes(platform) ? '9:16' : '16:9';
+
+function optionsForRevision(options: EditOptions): EditOptions {
+  return {
+    target_duration_s: options.target_duration_s ?? null,
+    color_grade: options.color_grade ?? null,
+    caption_style: options.caption_style ?? null,
+    music_style: options.music_style ?? null,
+    add_music: options.add_music ?? true,
+    aspect_ratio: options.aspect_ratio ?? null,
+  };
+}
+
 export default function ProjectPage() {
   const params = useParams<{ id: string }>();
   const projectId = params.id;
@@ -48,6 +70,15 @@ export default function ProjectPage() {
   const [actionFailure, setActionFailure] = useState<Failure | null>(null);
   const [replayed, setReplayed] = useState<ProgressEvent[]>([]);
   const [busy, setBusy] = useState(false);
+  const [revisionOpen, setRevisionOpen] = useState(false);
+  const [revisionBusy, setRevisionBusy] = useState(false);
+  const revisionLock = useRef(false);
+  const [revisionPrompt, setRevisionPrompt] = useState('');
+  const [revisionPlatform, setRevisionPlatform] = useState('instagram');
+  const [revisionOptions, setRevisionOptions] = useState<EditOptions>({
+    target_duration_s: null, color_grade: null, caption_style: null, music_style: null,
+    add_music: true, aspect_ratio: null,
+  });
 
   const refresh = useCallback(async () => {
     try {
@@ -77,7 +108,7 @@ export default function ProjectPage() {
     setBusy(true);
     setActionFailure(null);
     try {
-      await startPipeline(projectId);
+      await startPipeline(projectId, crypto.randomUUID());
       await refresh();
     } catch (error) {
       setActionFailure({ ...toFailure(error, 'Starting processing'), onRetry: () => void start() });
@@ -85,6 +116,63 @@ export default function ProjectPage() {
       setBusy(false);
     }
   }, [projectId, refresh]);
+
+  const openRevision = () => {
+    if (!project) return;
+    setRevisionPrompt(project.raw_prompt ?? '');
+    setRevisionPlatform(project.target_platform);
+    setRevisionOptions(optionsForRevision(project.edit_options));
+    setRevisionOpen(true);
+    setActionFailure(null);
+  };
+
+  const submitRevision = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (revisionLock.current || !project || !revisionPrompt.trim()) return;
+    revisionLock.current = true;
+    setRevisionBusy(true);
+    setActionFailure(null);
+    try {
+      await createRevision(projectId, {
+        prompt: revisionPrompt.trim(), target_platform: revisionPlatform,
+        edit_options: { ...revisionOptions, aspect_ratio: revisionOptions.aspect_ratio ?? defaultAspect(revisionPlatform) },
+        idempotency_key: crypto.randomUUID(),
+      });
+      setRevisionOpen(false);
+      await refresh();
+    } catch (error) {
+      setActionFailure(toFailure(error, 'Submitting this edit revision'));
+    } finally {
+      revisionLock.current = false;
+      setRevisionBusy(false);
+    }
+  };
+
+  const retryJob = async (job: Job) => {
+    setActionFailure(null);
+    setBusy(true);
+    try {
+      await retryRevision(projectId, job.id, crypto.randomUUID());
+      await refresh();
+    } catch (error) {
+      setActionFailure(toFailure(error, 'Retrying this edit revision'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelJob = async (job: Job) => {
+    setActionFailure(null);
+    setBusy(true);
+    try {
+      await cancelRevision(projectId, job.id);
+      await refresh();
+    } catch (error) {
+      setActionFailure(toFailure(error, 'Cancelling the queued revision'));
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const removeClip = useCallback(
     async (clipId: string) => {
@@ -136,16 +224,25 @@ export default function ProjectPage() {
     caption_style: null,
     music_style: null,
     add_music: true,
+    aspect_ratio: null,
   };
+  // Keep the page usable while rolling out the additive render-history schema to
+  // a previously running API instance that still returns the older detail shape.
+  const renders = project.renders ?? [];
   const usable = project.clips.filter((c) => c.status !== 'rejected');
   const rejected = project.clips.length - usable.length;
   const latestJob = project.jobs[0] ?? null;
+  const activeJob = project.jobs.find((job) => ACTIVE_JOB_STATES.includes(job.state)) ?? null;
+  const currentJob = activeJob ?? latestJob;
   const running = ACTIVE_PIPELINE_STATUSES.includes(project.status);
   const startable = canStartPipeline(project.status, usable.length);
 
   // Merge the REST replay with live events, de-duplicated: a reconnect can deliver the
   // same event twice and the feed should not stutter.
   const feed = dedupe([...replayed, ...events]);
+  const currentJobFeed = currentJob ? feed.filter((event) => event.job_id === currentJob.id) : [];
+  const currentEvent = currentJobFeed[currentJobFeed.length - 1] ??
+    (latest?.job_id === currentJob?.id ? latest : null);
 
   return (
     <>
@@ -164,6 +261,7 @@ export default function ProjectPage() {
               {project.created_at ? new Date(project.created_at).toLocaleString() : '—'}
             </span>
           </p>
+          {project.status_detail && <p className="muted" role="status" style={{ marginTop: 5 }}>{project.status_detail}</p>}
         </div>
         <div className="row">
           <ConnectionPill connection={connection} />
@@ -175,10 +273,94 @@ export default function ProjectPage() {
 
       {project.raw_prompt && (
         <div className="card" style={{ marginTop: 16 }}>
-          <div className="stat">
-            <div className="label">Your instruction</div>
+          <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <div className="label">Current edit · version {project.prompt_version}</div>
+              <p style={{ marginTop: 6, lineHeight: 1.6 }}>{project.raw_prompt}</p>
+            </div>
+            <button type="button" className="btn secondary small" onClick={openRevision} disabled={running || usable.length === 0}>
+              Revise edit
+            </button>
           </div>
-          <p style={{ marginTop: 6, lineHeight: 1.6 }}>{project.raw_prompt}</p>
+          {revisionOpen && (
+            <form className="edit-options" style={{ marginTop: 16 }} onSubmit={submitRevision}>
+              <label className="field">
+                <span>Editing prompt</span>
+                <textarea value={revisionPrompt} maxLength={4000} required minLength={3}
+                  onChange={(event) => setRevisionPrompt(event.target.value)} />
+                <small className="muted">Edit the full current instruction. Your existing uploads stay on this project.</small>
+              </label>
+              <div className="grid cols-2">
+                <label className="field">
+                  <span>Export target</span>
+                  <select value={revisionPlatform} onChange={(event) => {
+                    const platform = event.target.value;
+                    setRevisionPlatform(platform);
+                    setRevisionOptions((current) => ({ ...current, aspect_ratio: defaultAspect(platform) }));
+                  }}>
+                    <option value="instagram">Instagram</option>
+                    <option value="tiktok">TikTok</option>
+                    <option value="youtube_short">YouTube Short</option>
+                    <option value="youtube">YouTube</option>
+                    <option value="general">General</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Aspect ratio</span>
+                  <select value={revisionOptions.aspect_ratio ?? defaultAspect(revisionPlatform)}
+                    onChange={(event) => setRevisionOptions((current) => ({ ...current, aspect_ratio: event.target.value }))}>
+                    {['9:16', '16:9', '1:1', '4:5'].map((aspect) => <option key={aspect} value={aspect}>{aspect}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Target duration (seconds)</span>
+                  <input type="number" min="5" max="600" step="1"
+                    value={revisionOptions.target_duration_s ?? ''} placeholder="Automatic"
+                    onChange={(event) => setRevisionOptions((current) => ({
+                      ...current, target_duration_s: event.target.value ? Number(event.target.value) : null,
+                    }))} />
+                </label>
+                <label className="field">
+                  <span>Color style</span>
+                  <select value={revisionOptions.color_grade ?? ''} onChange={(event) => setRevisionOptions((current) => ({
+                    ...current, color_grade: event.target.value || null,
+                  }))}>
+                    <option value="">Infer from prompt</option>
+                    {COLOR_GRADES.map((style) => <option key={style} value={style}>{style.replace('_', ' ')}</option>)}
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Captions</span>
+                  <select value={revisionOptions.caption_style ?? ''} onChange={(event) => setRevisionOptions((current) => ({
+                    ...current, caption_style: event.target.value || null,
+                  }))}>
+                    <option value="">Infer from prompt</option>
+                    {CAPTION_STYLES.map((style) => <option key={style} value={style}>{style === 'None' ? 'Off' : style}</option>)}
+                  </select>
+                  <small className="muted">Requested captions use the configured local Whisper model.</small>
+                </label>
+                <label className="field">
+                  <span>Music style</span>
+                  <select value={revisionOptions.music_style ?? ''} disabled={!revisionOptions.add_music}
+                    onChange={(event) => setRevisionOptions((current) => ({ ...current, music_style: event.target.value || null }))}>
+                    <option value="">Infer from prompt</option>
+                    {MUSIC_STYLES.map((style) => <option key={style} value={style}>{style}</option>)}
+                  </select>
+                </label>
+                <label className="check-field">
+                  <input type="checkbox" checked={revisionOptions.add_music}
+                    onChange={(event) => setRevisionOptions((current) => ({ ...current, add_music: event.target.checked }))} />
+                  <span><strong>Add generated music</strong><small>Mixes with source audio using the existing soundtrack stage.</small></span>
+                </label>
+              </div>
+              <div className="row" style={{ justifyContent: 'flex-end' }}>
+                <button type="button" className="btn secondary" onClick={() => setRevisionOpen(false)} disabled={revisionBusy}>Keep current version</button>
+                <button type="submit" className="btn" disabled={revisionBusy || running || usable.length === 0}>
+                  {revisionBusy ? 'Submitting revision…' : 'Create new version'}
+                </button>
+              </div>
+            </form>
+          )}
         </div>
       )}
 
@@ -191,8 +373,8 @@ export default function ProjectPage() {
               title: 'Processing failed',
               detail: project.status_detail,
               tone: 'error',
-              onRetry: () => void start(),
-              retryLabel: 'Run again',
+              onRetry: latestJob ? () => void retryJob(latestJob) : undefined,
+              retryLabel: 'Retry this revision',
             }}
           />
         </div>
@@ -206,7 +388,7 @@ export default function ProjectPage() {
                 latestJob.error ??
                 'The broker was unreachable when we tried to schedule the work. Your clips are safe.',
               tone: 'warn',
-              onRetry: () => void start(),
+              onRetry: latestJob ? () => void retryJob(latestJob) : undefined,
               retryLabel: 'Submit again',
             }}
           />
@@ -226,7 +408,7 @@ export default function ProjectPage() {
                   : 'not connected'}
           </span>
         </div>
-        <StatusRail status={project.status} latest={latest} clipCount={usable.length} />
+        <StatusRail status={project.status} latest={currentEvent} clipCount={usable.length} />
         <div className="row" style={{ marginTop: 14 }}>
           <button type="button" className="btn" onClick={() => void start()} disabled={!startable || busy}>
             {running ? 'Processing…' : busy ? 'Working…' : 'Start processing'}
@@ -241,6 +423,18 @@ export default function ProjectPage() {
                   )} of footage.`}
           </span>
         </div>
+        {activeJob && (
+          <div className="card" style={{ marginTop: 14 }}>
+            <div className="row" style={{ justifyContent: 'space-between' }}>
+              <span>Active job · v{activeJob.prompt_version ?? project.prompt_version} · <span className="mono">{activeJob.id}</span></span>
+              <Badge tone={jobStateTone(activeJob.state)}>{activeJob.state}</Badge>
+            </div>
+            {activeJob.state === 'queued' && (
+              <button type="button" className="btn danger small" style={{ marginTop: 10 }} disabled={busy}
+                onClick={() => void cancelJob(activeJob)}>Cancel queued revision</button>
+            )}
+          </div>
+        )}
       </section>
 
       <section className="section">
@@ -282,9 +476,9 @@ export default function ProjectPage() {
             </div>
           </div>
           <div className="card stat">
-            <div className="label">Story score</div>
+            <div className="label">Heuristic plan score</div>
             <div className="value">{project.story_score != null ? project.story_score.toFixed(2) : '—'}</div>
-            <div className="foot">independent judge</div>
+            <div className="foot">rule-based estimate, not a human quality rating</div>
           </div>
           <div className="card stat">
             <div className="label">Render</div>
@@ -299,6 +493,60 @@ export default function ProjectPage() {
             <div className="foot mono">{latestJob ? latestJob.id : 'never run'}</div>
           </div>
         </div>
+      </section>
+
+      <section className="section" aria-labelledby="version-history-heading">
+        <div className="section-head">
+          <h2 id="version-history-heading">Version history</h2>
+          <span className="hint">Each job keeps its prompt and editing options.</span>
+        </div>
+        {project.jobs.length ? (
+          <div className="grid">
+            {project.jobs.map((job) => {
+              const isActive = job.id === activeJob?.id;
+              const isCurrent = job.prompt_version === project.prompt_version;
+              const snapshot = job.edit_options_snapshot;
+              const canRetry = !running && isCurrent && ['failed', 'submit_failed'].includes(job.state);
+              return (
+                <article className="card" key={job.id}>
+                  <div className="row" style={{ justifyContent: 'space-between', alignItems: 'center' }}>
+                    <strong>Version {job.prompt_version ?? '—'}{job.retry_of_job_id ? ' · retry' : ''}</strong>
+                    <div className="row">
+                      {isActive && <Badge tone="busy">active</Badge>}
+                      {!isCurrent && <Badge tone="neutral">previous</Badge>}
+                      <Badge tone={jobStateTone(job.state)}>{job.state}</Badge>
+                    </div>
+                  </div>
+                  <p style={{ margin: '10px 0', lineHeight: 1.5 }}>
+                    {job.prompt_snapshot ?? 'Prompt history unavailable for this older job.'}
+                  </p>
+                  <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.7 }}>
+                    {job.target_platform_snapshot ?? '—'} · {snapshot?.target_duration_s ? `${snapshot.target_duration_s}s` : 'automatic duration'} ·
+                    {' '}{snapshot?.aspect_ratio ?? 'platform aspect'} · {snapshot?.color_grade ?? 'inferred look'} ·
+                    {' '}{snapshot?.add_music ? `music${snapshot.music_style ? ` · ${snapshot.music_style}` : ''}` : 'source audio'} ·
+                    {' '}{snapshot?.caption_style ?? 'captions from prompt'}
+                  </div>
+                  {job.revision_mode === 'incremental' && (
+                    <p className="muted" style={{ fontSize: 12, margin: '8px 0 0' }}>
+                      Targeted revision · kept {job.inherited_requirements.length
+                        ? job.inherited_requirements.join(', ')
+                        : 'the prior edit requirements'}.
+                    </p>
+                  )}
+                  <div className="row" style={{ justifyContent: 'space-between', marginTop: 10 }}>
+                    <span className="mono muted" style={{ fontSize: 11.5 }}>{job.id}</span>
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {job.created_at ? new Date(job.created_at).toLocaleString() : '—'}{job.stage ? ` · ${job.stage}` : ''}
+                    </span>
+                  </div>
+                  {job.error && <p className="muted" role="status" style={{ marginTop: 8 }}>{job.error}</p>}
+                  {canRetry && <button type="button" className="btn secondary small" disabled={busy}
+                    style={{ marginTop: 10 }} onClick={() => void retryJob(job)}>Retry with saved inputs</button>}
+                </article>
+              );
+            })}
+          </div>
+        ) : <div className="empty">No processing jobs yet.</div>}
       </section>
 
       <section className="section" aria-labelledby="render-heading">
@@ -325,6 +573,39 @@ export default function ProjectPage() {
           <div className="empty">The rendered MP4 will appear here when processing finishes.</div>
         )}
       </section>
+
+      {renders.length > 0 && (
+        <section className="section" aria-labelledby="render-history-heading">
+          <div className="section-head">
+            <h2 id="render-history-heading">Generated renders</h2>
+            <span className="hint">Previous successful exports stay available while revisions run or fail.</span>
+          </div>
+          <div className="grid cols-2">
+            {renders.map((render) => {
+              const renderJob = project.jobs.find((job) => job.id === render.job_id);
+              return (
+                <article className="card" key={render.id}>
+                  <div className="row" style={{ justifyContent: 'space-between' }}>
+                    <strong>{render.is_current ? 'Current render' : 'Previous render'} · {render.platform ? `${render.platform} export` : 'Master render'} · v{renderJob?.prompt_version ?? '—'}</strong>
+                    <Badge tone={render.status === 'complete' ? 'ok' : 'warn'}>{render.status}</Badge>
+                  </div>
+                  {render.preview_url ? (
+                    <video className="render-video" controls preload="metadata" src={mediaUrl(render.preview_url)}
+                      aria-label={`Preview render ${render.id}`} style={{ marginTop: 12 }} />
+                  ) : <div className="empty">This older file is unavailable in storage.</div>}
+                  <div className="row render-meta">
+                    <span>{render.resolution}</span>
+                    <span>{render.duration != null ? formatDuration(render.duration) : '—'}</span>
+                    {render.file_size_bytes != null && <span>{formatBytes(render.file_size_bytes)}</span>}
+                    {render.preview_url && <a className="btn small" href={`${mediaUrl(render.preview_url)}?download=true`} download>Download MP4</a>}
+                  </div>
+                  {renderJob?.prompt_snapshot && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>{renderJob.prompt_snapshot}</p>}
+                </article>
+              );
+            })}
+          </div>
+        </section>
+      )}
 
       <section className="section">
         <div className="section-head"><h2>Edit settings</h2></div>
@@ -379,7 +660,7 @@ export default function ProjectPage() {
           <span className="hint">{feed.length} events</span>
         </div>
         <div className="card">
-          <ProgressFeed events={feed} />
+          <ProgressFeed events={currentJobFeed} />
         </div>
       </section>
     </>

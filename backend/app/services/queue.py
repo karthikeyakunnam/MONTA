@@ -87,3 +87,17 @@ class PipelineQueue:
             return await asyncio.wait_for(asyncio.to_thread(check), self.timeout_s)
         except Exception:
             return False
+
+    async def cancel(self, *, task_id: str) -> None:
+        """Ask Celery to revoke queued work without terminating an already-running worker."""
+        if not self.enabled:
+            return
+        try:
+            await asyncio.wait_for(
+                asyncio.to_thread(self.app().control.revoke, task_id, terminate=False),
+                self.timeout_s,
+            )
+        except Exception as e:
+            # The database cancellation is authoritative. Workers re-check the job row
+            # before writing results, so a broker outage cannot resurrect the revision.
+            logger.warning("queued task revoke could not be confirmed", extra={"task_id": task_id, "error": str(e)})

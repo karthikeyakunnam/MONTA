@@ -195,6 +195,7 @@ class FakeQueue:
     enabled: bool = True
     available: bool = True
     submitted: list[dict] = field(default_factory=list)
+    cancelled: list[str] = field(default_factory=list)
 
     async def submit_pipeline(self, *, job_id: str, project_id: str, trace_id: str | None = None):
         from app.services.queue import QueueUnavailable, SubmittedJob
@@ -207,6 +208,9 @@ class FakeQueue:
 
     async def ping(self) -> bool:
         return self.available
+
+    async def cancel(self, *, task_id: str) -> None:
+        self.cancelled.append(task_id)
 
 
 @dataclass
@@ -277,7 +281,7 @@ async def harness(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncItera
     for field, value in {
         "DATABASE_URL": f"sqlite+aiosqlite:///{db_path}",
         "STORAGE_ROOT": str(tmp_path / "storage"),
-        "CORS_ORIGINS": ["http://localhost:3000"],
+        "CORS_ORIGINS": ["http://localhost:3000", "http://localhost:3100"],
         "SUPPORTED_FORMATS": "mp4,mov,mkv",
         "MAX_UPLOAD_SIZE_MB": 500,
         "MAX_REQUEST_SIZE_MB": 4096,

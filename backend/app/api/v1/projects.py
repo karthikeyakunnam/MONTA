@@ -12,7 +12,7 @@ Project lifecycle and the pipeline trigger.
     GET    /projects/{id}/events     progress events already recorded (websocket replay)
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import current_user_id, get_db, get_limits, get_progress_bus, get_queue, get_storage
@@ -28,6 +28,9 @@ from app.schemas.project import (
     ProjectUpdate,
     QuotaClassOut,
     EditOptions,
+    RevisionCreate,
+    RetryRequest,
+    RenderOut,
 )
 from app.services.progress import ProgressBus
 from app.services.project_service import ProjectConflict, ProjectNotFound, ProjectService, ProjectSummary
@@ -42,6 +45,14 @@ def _service(db: AsyncSession, queue: PipelineQueue | None = None, progress: Pro
     return ProjectService(db, queue=queue, progress=progress)
 
 
+def _job_out(job) -> JobOut:
+    fields = {name: getattr(job, name) for name in JobOut.model_fields if hasattr(job, name)}
+    result = job.result if isinstance(job.result, dict) else {}
+    fields["revision_mode"] = result.get("revision_mode")
+    fields["inherited_requirements"] = result.get("inherited_requirements", [])
+    return JobOut.model_validate(fields)
+
+
 def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
     project = summary.project
     usable = summary.usable_clips
@@ -54,18 +65,31 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
         ))
     story = project.story_plan or {}
     judgement = project.story_judgement or {}
-    render = summary.latest_render      # eagerly loaded: touching project.renders here would lazy-load
+    preferred_render_id = judgement.get("current_render_id") if isinstance(judgement, dict) else None
+    render_candidates = list(summary.renders)
+    if preferred_render_id:
+        render_candidates.sort(key=lambda item: item.id != preferred_render_id)
+    render = None
     render_file = None
-    if render and render.output_path and render.status == "complete":
+    if render_candidates:
         from app.config import settings
-        render_file = resolve_stored_mp4(render.output_path, settings.storage_root_path)
+        for candidate in render_candidates:
+            if candidate.output_path and candidate.status == "complete":
+                try:
+                    candidate_file = resolve_stored_mp4(candidate.output_path, settings.storage_root_path)
+                except (OSError, ValueError):
+                    continue
+                if candidate_file.is_file():
+                    render, render_file = candidate, candidate_file
+                    break
     return ProjectDetail(
         id=project.id, title=project.title, description=project.description, status=ProjectStatus(project.status),
         status_detail=project.status_detail, raw_prompt=project.raw_prompt, target_platform=project.target_platform,
         edit_options=EditOptions.model_validate(project.edit_options or {}),
+        prompt_version=project.prompt_version or 1,
         created_at=project.created_at, updated_at=project.updated_at, clip_count=len(usable),
         clips=[ClipOut.model_validate(c) for c in summary.clips],
-        jobs=[JobOut.model_validate(j) for j in summary.jobs],
+        jobs=[_job_out(j) for j in summary.jobs],
         quota=quota, total_duration_s=summary.total_duration_s,
         story_pattern=story.get("story_pattern"),
         story_duration_s=story.get("total_duration_s"),
@@ -76,7 +100,26 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
         render_resolution=render.resolution if render_file else None,
         render_duration_s=render.duration if render_file else None,
         render_size_bytes=render_file.stat().st_size if render_file else None,
+        renders=[
+            RenderOut(
+                id=r.id, job_id=r.job_id, status=r.status, resolution=r.resolution, format=r.format,
+                platform=r.platform, duration=r.duration, file_size_bytes=int(r.file_size_bytes or 0),
+                created_at=r.created_at,
+                is_current=bool(render and r.id == render.id),
+                preview_url=f"/api/v1/render/{r.id}/download" if r.status == "complete" and r.output_path
+                and _valid_render_path(r.output_path) else None,
+            )
+            for r in summary.renders
+        ],
     )
+
+
+def _valid_render_path(path: str) -> bool:
+    from app.config import settings
+    try:
+        return resolve_stored_mp4(path, settings.storage_root_path).is_file()
+    except (OSError, ValueError):
+        return False
 
 
 @router.post("", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)
@@ -104,6 +147,7 @@ async def list_projects(limit: int = Query(50, ge=1, le=200), db: AsyncSession =
         ProjectOut(id=p.id, title=p.title, description=p.description, status=ProjectStatus(p.status),
                    status_detail=p.status_detail, raw_prompt=p.raw_prompt, target_platform=p.target_platform,
                    edit_options=EditOptions.model_validate(p.edit_options or {}),
+                   prompt_version=p.prompt_version or 1,
                    created_at=p.created_at, updated_at=p.updated_at, clip_count=n)
         for p, n in rows
     ]
@@ -135,6 +179,7 @@ async def update_project(project_id: str, payload: ProjectUpdate, db: AsyncSessi
                       status=ProjectStatus(project.status), status_detail=project.status_detail,
                       raw_prompt=project.raw_prompt, target_platform=project.target_platform,
                       edit_options=EditOptions.model_validate(project.edit_options or {}),
+                      prompt_version=project.prompt_version or 1,
                       created_at=project.created_at, updated_at=project.updated_at)
 
 
@@ -152,11 +197,12 @@ async def delete_project(project_id: str, db: AsyncSession = Depends(get_db), us
 @router.post("/{project_id}/pipeline", response_model=JobSubmission, status_code=status.HTTP_202_ACCEPTED)
 async def start_pipeline(project_id: str, db: AsyncSession = Depends(get_db), user_id: str = Depends(current_user_id),
                          queue: PipelineQueue = Depends(get_queue),
-                         progress: ProgressBus = Depends(get_progress_bus)) -> JobSubmission:
+                         progress: ProgressBus = Depends(get_progress_bus),
+                         idempotency_key: str | None = Header(default=None, alias="Idempotency-Key")) -> JobSubmission:
     """Queue Layers 3–7 for this project and return the tracking id."""
     service = _service(db, queue=queue, progress=progress)
     try:
-        job = await service.start_pipeline(project_id, user_id)
+        job = await service.start_pipeline(project_id, user_id, idempotency_key=idempotency_key)
     except ProjectNotFound as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     except ProjectConflict as e:
@@ -167,6 +213,61 @@ async def start_pipeline(project_id: str, db: AsyncSession = Depends(get_db), us
     project = await service.get(project_id, user_id)
     return JobSubmission(tracking_id=job.id, job_id=job.id, task_id=job.task_id,
                          state=job.state, project_status=ProjectStatus(project.status))
+
+
+@router.post("/{project_id}/revisions", response_model=JobSubmission, status_code=status.HTTP_202_ACCEPTED)
+async def create_revision(project_id: str, payload: RevisionCreate, db: AsyncSession = Depends(get_db),
+                          user_id: str = Depends(current_user_id), queue: PipelineQueue = Depends(get_queue),
+                          progress: ProgressBus = Depends(get_progress_bus)) -> JobSubmission:
+    """Create a new prompt/options version in the same project using its stored clips."""
+    service = _service(db, queue=queue, progress=progress)
+    try:
+        job = await service.revise(
+            project_id, user_id, prompt=payload.prompt, target_platform=payload.target_platform,
+            edit_options=payload.edit_options.model_dump(mode="json"), idempotency_key=payload.idempotency_key,
+        )
+    except ProjectNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except ProjectConflict as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except QueueUnavailable as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    project = await service.get(project_id, user_id)
+    return JobSubmission(tracking_id=job.id, job_id=job.id, task_id=job.task_id,
+                         state=job.state, project_status=ProjectStatus(project.status))
+
+
+@router.post("/{project_id}/jobs/{job_id}/retry", response_model=JobSubmission,
+             status_code=status.HTTP_202_ACCEPTED)
+async def retry_revision(project_id: str, job_id: str, payload: RetryRequest,
+                         db: AsyncSession = Depends(get_db), user_id: str = Depends(current_user_id),
+                         queue: PipelineQueue = Depends(get_queue),
+                         progress: ProgressBus = Depends(get_progress_bus)) -> JobSubmission:
+    service = _service(db, queue=queue, progress=progress)
+    try:
+        job = await service.retry(project_id, user_id, job_id, idempotency_key=payload.idempotency_key)
+    except ProjectNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except ProjectConflict as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except QueueUnavailable as e:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+    project = await service.get(project_id, user_id)
+    return JobSubmission(tracking_id=job.id, job_id=job.id, task_id=job.task_id,
+                         state=job.state, project_status=ProjectStatus(project.status))
+
+
+@router.post("/{project_id}/jobs/{job_id}/cancel", response_model=JobOut)
+async def cancel_revision(project_id: str, job_id: str, db: AsyncSession = Depends(get_db),
+                          user_id: str = Depends(current_user_id), queue: PipelineQueue = Depends(get_queue),
+                          progress: ProgressBus = Depends(get_progress_bus)) -> JobOut:
+    try:
+        job = await _service(db, queue=queue, progress=progress).cancel_queued(project_id, user_id, job_id)
+    except ProjectNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except ProjectConflict as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    return JobOut.model_validate(job)
 
 
 @router.get("/{project_id}/events", response_model=list[ProgressEventOut])

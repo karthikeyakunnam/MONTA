@@ -22,6 +22,7 @@ evidence once clips are analyzed ("make it cool" + gym footage → fitness).
 
 import asyncio
 import logging
+import re
 from collections import Counter, defaultdict
 from collections.abc import Sequence
 from enum import StrEnum
@@ -32,7 +33,7 @@ from services.prompt_engine.llm_extractor import LLMField, LLMIntent, LLMIntentE
 from shared.contracts.base import revalidate
 from shared.contracts.clip import ClipIntelligence
 from shared.contracts.explain import Evidence, Explained, clamp
-from shared.contracts.intent import Ambiguity, ArcBeat, Conflict, IntentAnalysis
+from shared.contracts.intent import Ambiguity, ArcBeat, Conflict, IntentAnalysis, MissingInfo
 from shared.contracts.vocab import Emotion, Genre
 from shared.providers.base import ModelProvider
 from shared.providers.errors import ProviderError
@@ -41,6 +42,21 @@ from shared.observability.tracing import span
 from shared.text import phrases_in, tokenize
 
 logger = logging.getLogger("monta.prompt_engine")
+
+_TARGETED_REVISION = re.compile(
+    r"\b(?:keep|preserve|maintain|but|only|instead|happier|brighter|darker|slower|faster|more|less)\b"
+    r"|\b(?:change|adjust|make)\s+(?:the\s+)?(?:opening|start|middle|ending|end|pace|pacing|cuts?|"
+    r"music|audio|captions?|colou?rs?|duration|aspect(?:\s+ratio)?)\b",
+    re.IGNORECASE,
+)
+
+
+def is_incremental_revision(previous_prompt: str | None, revised_prompt: str) -> bool:
+    """Recognize a targeted edit instruction that should inherit omitted requirements."""
+    previous = (previous_prompt or "").strip()
+    revised = revised_prompt.strip()
+    return bool(previous and revised and previous.casefold() != revised.casefold()
+                and _TARGETED_REVISION.search(revised))
 
 LLM_ONLY_DISCOUNT = 0.85
 FOOTAGE_OVERRIDE_BELOW = 0.5
@@ -103,6 +119,82 @@ class IntentEngine:
             sp.set(extractors=",".join(intent.extractors), confidence=intent.overall_confidence)
         record_intent_metrics(intent)
         return intent
+
+    @staticmethod
+    def merge_revision(previous: IntentAnalysis, revised: IntentAnalysis) -> IntentAnalysis:
+        """Apply a targeted revision while carrying forward requirements it omitted.
+
+        Section-specific emotion/pace evidence changes only that act's arc beat; it
+        does not replace the edit's global mood or pace. Explicit new global fields
+        replace their prior values, and new arc sections replace matching old beats.
+        """
+        dimensions = (L.GENRE, L.EMOTION, L.PACE, L.PLATFORM, L.COLOR, L.CAPTION, L.MUSIC,
+                      L.REFERENCE, "target_duration_s")
+        updates = {}
+        inherited: list[str] = []
+
+        def localized_to_arc(field: Explained | None) -> bool:
+            if field is None or not field.evidence or not revised.pacing_arc:
+                return False
+            local_spans = [beat.span.casefold() for beat in revised.pacing_arc]
+            prompt_evidence = [e for e in field.evidence if e.source in ("prompt", "llm")]
+            return bool(prompt_evidence) and all(
+                e.span and any(e.span.casefold() in span or span in e.span.casefold() for span in local_spans)
+                for e in prompt_evidence
+            )
+
+        for name in dimensions:
+            old = getattr(previous, name)
+            new = getattr(revised, name)
+            preserve_global = name in (L.EMOTION, L.PACE) and localized_to_arc(new)
+            if old is not None and (new is None or new.is_default or preserve_global):
+                updates[name] = old
+                inherited.append(name)
+            else:
+                updates[name] = new
+
+        beats = {beat.section: beat for beat in previous.pacing_arc}
+        beats.update({beat.section: beat for beat in revised.pacing_arc})
+        updates["pacing_arc"] = tuple(beats[s] for s in ("start", "middle", "end") if s in beats)
+
+        ambiguities = list(revised.ambiguities)
+        known_ambiguities = {(item.field, tuple(item.candidates)) for item in ambiguities}
+        for item in previous.ambiguities:
+            key = (item.field, tuple(item.candidates))
+            if item.field in inherited and key not in known_ambiguities:
+                ambiguities.append(item)
+                known_ambiguities.add(key)
+        updates["ambiguities"] = tuple(ambiguities)
+
+        conflicts = list(revised.conflicts)
+        known_conflicts = {tuple(item.fields) + tuple(item.values) for item in conflicts}
+        for item in previous.conflicts:
+            key = tuple(item.fields) + tuple(item.values)
+            if set(item.fields).issubset(inherited) and key not in known_conflicts:
+                conflicts.append(item)
+                known_conflicts.add(key)
+        updates["conflicts"] = tuple(conflicts)
+
+        missing = {item.field: item for item in revised.missing}
+        for name in inherited:
+            old = getattr(previous, name)
+            if old is not None and not old.is_default:
+                missing.pop(name, None)
+            elif old is None or old.is_default:
+                old_missing = next((item for item in previous.missing if item.field == name), None)
+                if old_missing:
+                    missing[name] = old_missing
+        updates["missing"] = tuple(missing.values())
+
+        core = [updates[name] for name in (L.GENRE, L.EMOTION, L.PACE, L.PLATFORM)]
+        confidence = sum(item.confidence for item in core) / 4
+        confidence -= 0.1 * sum(item.severity == "hard" for item in conflicts) + 0.04 * len(ambiguities)
+        updates["overall_confidence"] = round(clamp(confidence), 3)
+        updates["extractors"] = tuple(dict.fromkeys(previous.extractors + revised.extractors))
+        updates["revisions"] = revised.revisions + (
+            "targeted revision merged; inherited unchanged requirements: " + ", ".join(inherited or ("none",)),
+        )
+        return revalidate(revised, **updates)
 
     async def _analyze(self, prompt: str) -> IntentAnalysis:
         lexical = self.lexical.extract(prompt or "")

@@ -27,7 +27,7 @@ depends_on = None
 
 PROJECT_STATUSES = ("draft", "uploading", "queued", "analyzing", "story_building", "rendering", "complete", "failed")
 CLIP_STATUSES = ("uploaded", "analyzing", "analyzed", "rejected", "failed")
-JOB_STATES = ("pending", "queued", "running", "succeeded", "failed", "submit_failed")
+JOB_STATES = ("pending", "queued", "running", "succeeded", "failed", "submit_failed", "cancelled")
 RENDER_STATUSES = ("queued", "processing", "complete", "failed", "cancelled")
 
 

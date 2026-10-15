@@ -60,6 +60,7 @@ class VideoSegmentIR(BaseModel):
     source_path: str = Field(..., min_length=1)
     source_in_ms: TimeMs
     source_out_ms: TimeMs
+    source_crop: tuple[int, int, int, int] | None = None
     timeline_start_ms: TimeMs
     timeline_end_ms: TimeMs
     speed: float = Field(1.0, gt=0.1, le=10.0, description="Playback speed multiplier (1.0 = normal)")
@@ -147,6 +148,16 @@ class TimelineIR(BaseModel):
     @property
     def duration_s(self) -> float:
         return self.total_duration_ms / 1000.0
+
+    @property
+    def render_duration_s(self) -> float:
+        """Expected encoded duration after real transition overlaps are applied."""
+        overlap_ms = sum(
+            segment.transition_in_ms
+            for segment in self.video_segments[1:]
+            if segment.transition_in != TransitionType.CUT and segment.transition_in_ms > 0
+        )
+        return max(0.0, (self.total_duration_ms - overlap_ms) / 1000.0)
 
     @model_validator(mode="after")
     def _validate_timeline(self):

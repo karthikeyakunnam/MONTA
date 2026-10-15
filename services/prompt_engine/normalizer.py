@@ -42,6 +42,7 @@ _PRE_REPLACEMENTS = [
     (re.compile(r"[-_/]+"), " "),
 ]
 _TOKEN = re.compile(r"[a-z0-9]+(?:'[a-z]+)?|[.,;:!?\n]")
+_COMMON_FIXES = {"secounds": "seconds"}
 
 
 def osa_distance(a: str, b: str, limit: int = 3) -> int:
@@ -149,6 +150,12 @@ def normalize(raw: str) -> NormalizedPrompt:
             if expansion != raw_tok:
                 corrections.append(Correction(original=raw_tok, corrected=expansion or "∅", kind="slang"))
             tokens.extend(expansion.split())
+            continue
+        if raw_tok in _COMMON_FIXES:
+            fixed = _COMMON_FIXES[raw_tok]
+            corrections.append(Correction(original=raw_tok, corrected=fixed, kind="spelling"))
+            corrected.add(len(tokens))
+            tokens.append(fixed)
             continue
         fixed = correct_token(raw_tok)
         if fixed is not None:

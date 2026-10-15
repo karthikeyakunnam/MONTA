@@ -54,6 +54,12 @@ class TechnicalMetadata(BaseModel):
     rotation: int = 0
     file_size_bytes: int = Field(..., ge=0)
     fingerprint: str = Field(..., description="Content hash used as the analysis cache key")
+    # Stable active-picture rectangle detected in the source. Coordinates are in
+    # decoded (autorotated) pixels: width, height, x, y.
+    content_crop: tuple[int, int, int, int] | None = None
+    # Distinguishes "crop scan completed and found no matte" from older cached
+    # metadata that predates active-picture detection.
+    content_crop_analyzed: bool = False
 
     @property
     def is_vertical(self) -> bool:

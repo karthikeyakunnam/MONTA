@@ -379,6 +379,30 @@ class LexicalIntentExtractor:
                 span=" / ".join(spans),
                 reasoning=f"The prompt asks for {' and '.join(parts)} at the {section} ('{' / '.join(spans)}').",
             ))
+        # A clear sad-to-happy request often omits the word "start". Preserve that
+        # contrast as an ordered opening beat, while requiring positive sad evidence
+        # before an explicitly positive ending so negated or unrelated moods do not
+        # become an invented arc.
+        present = {beat.section for beat in beats}
+        end = next((beat for beat in beats if beat.section == "end"), None)
+        tokens = r.normalized.tokens
+        if "start" not in present and end and end.emotion in (Emotion.UPLIFTING, Emotion.JOYFUL):
+            matches = LexicalIntentExtractor._match(tokens)
+            sad_positions = [m.start for m in matches if any(
+                dim == L.EMOTION and value == Emotion.EMOTIONAL.value for dim, value, _ in m.signals
+            )]
+            positive_end_positions = [m.start for m in matches if any(
+                dim == L.EMOTION and value in (Emotion.UPLIFTING.value, Emotion.JOYFUL.value)
+                for dim, value, _ in m.signals
+            )]
+            if (r.global_scores.get(L.EMOTION, {}).get(Emotion.EMOTIONAL.value, 0) > 0
+                    and sad_positions and positive_end_positions and min(sad_positions) < max(positive_end_positions)):
+                beats.append(ArcBeat(
+                    section="start", emotion=Emotion.EMOTIONAL,
+                    span="sad opening → " + end.span,
+                    reasoning="Inferred a sad opening because positive sad-language precedes the requested happy ending.",
+                ))
+                beats.sort(key=lambda beat: ("start", "middle", "end").index(beat.section))
         return tuple(beats)
 
     @staticmethod

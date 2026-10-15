@@ -54,7 +54,10 @@ from shared.observability.tracing import span
 logger = logging.getLogger("monta.intelligence.local_vision")
 
 # Maximum frames per VLM call to prevent OOM on small models
-MAX_VLM_FRAMES = 4
+# Ollama's default vision context is commonly 2048 tokens. Four 512px frames
+# exceeded it on the installed moondream model (3077 prompt tokens); two smaller
+# keyframes preserve temporal evidence while fitting the local context window.
+MAX_VLM_FRAMES = 2
 
 # Compact enumeration strings for the structuring prompt
 _CAMERA_TYPES = ", ".join(v.value for v in CameraType)

@@ -12,6 +12,7 @@ from shared.contracts.story import ValidationRule
 from shared.contracts.vocab import Emotion, Pace, StoryRole
 from tests.conftest import gym_clips, make_clip
 from tests.test_story import make_pack, seg
+from workers.tasks.pipeline_tasks import _duration_limit_notice
 
 R = StoryRole
 
@@ -69,6 +70,17 @@ def test_waterfill_hits_total_and_respects_bounds():
     assert sum(lengths) == pytest.approx(12.0) and lengths[0] <= 3.0
     assert waterfill([1, 1], [0.5, 0.5], [1, 1], 5.0) == [1, 1]          # infeasible: saturates at max
     assert waterfill([1, 1], [0.5, 0.5], [9, 9], 0.2) == [0.5, 0.5]      # over-full: saturates at min
+
+
+def test_duration_warning_distinguishes_transition_tolerance_from_footage_limit():
+    assert _duration_limit_notice(30, 30, 29.25) is None  # expected xfade overlap
+    warning = _duration_limit_notice(30, 4.85, 4.35)
+    assert warning == "Requested 30.0s; available footage limited the plan to 4.8s (4.3s rendered after transitions)."
+
+
+def test_duration_warning_identifies_platform_cap():
+    warning = _duration_limit_notice(180, 60, 59.25, platform_max_s=60)
+    assert warning and "platform limit (60.0s)" in warning
 
 
 # ---------------------------------------------------------------- pattern-specific validation

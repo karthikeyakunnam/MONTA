@@ -50,11 +50,18 @@ export interface Clip {
 export interface Job {
   id: string;
   kind: string;
-  state: 'pending' | 'queued' | 'running' | 'succeeded' | 'failed' | 'submit_failed';
+  state: 'pending' | 'queued' | 'running' | 'succeeded' | 'failed' | 'submit_failed' | 'cancelled';
   stage: string | null;
   task_id: string | null;
   attempts: number;
   error: string | null;
+  prompt_version: number | null;
+  prompt_snapshot: string | null;
+  target_platform_snapshot: string | null;
+  edit_options_snapshot: EditOptions | null;
+  retry_of_job_id: string | null;
+  revision_mode: string | null;
+  inherited_requirements: string[];
   created_at: string | null;
   started_at: string | null;
   finished_at: string | null;
@@ -77,6 +84,7 @@ export interface Project {
   raw_prompt: string | null;
   target_platform: string;
   edit_options: EditOptions;
+  prompt_version: number;
   created_at: string | null;
   updated_at: string | null;
   clip_count: number;
@@ -96,6 +104,7 @@ export interface ProjectDetail extends Project {
   render_resolution: string | null;
   render_duration_s: number | null;
   render_size_bytes: number | null;
+  renders: Render[];
 }
 
 export interface EditOptions {
@@ -104,6 +113,21 @@ export interface EditOptions {
   caption_style: string | null;
   music_style: string | null;
   add_music: boolean;
+  aspect_ratio?: string | null;
+}
+
+export interface Render {
+  id: string;
+  job_id: string | null;
+  is_current?: boolean;
+  status: string;
+  resolution: string;
+  format: string;
+  platform: string | null;
+  duration: number | null;
+  file_size_bytes: number | null;
+  created_at: string | null;
+  preview_url: string | null;
 }
 
 export interface UploadFileResult {
@@ -252,8 +276,19 @@ export const updateProject = (id: string, body: { title?: string; prompt?: strin
 export const deleteProject = (id: string) => request<void>(`/projects/${id}`, { method: 'DELETE' });
 export const deleteClip = (projectId: string, clipId: string) =>
   request<void>(`/upload/${projectId}/${clipId}`, { method: 'DELETE' });
-export const startPipeline = (id: string) =>
-  request<JobSubmission>(`/projects/${id}/pipeline`, { method: 'POST' });
+export const startPipeline = (id: string, idempotencyKey = crypto.randomUUID()) =>
+  request<JobSubmission>(`/projects/${id}/pipeline`, {
+    method: 'POST', headers: { 'Idempotency-Key': idempotencyKey },
+  });
+export const createRevision = (id: string, body: {
+  prompt: string; target_platform: string; edit_options: EditOptions; idempotency_key: string;
+}) => request<JobSubmission>(`/projects/${id}/revisions`, { method: 'POST', body: JSON.stringify(body) });
+export const retryRevision = (projectId: string, jobId: string, idempotency_key: string) =>
+  request<JobSubmission>(`/projects/${projectId}/jobs/${jobId}/retry`, {
+    method: 'POST', body: JSON.stringify({ idempotency_key }),
+  });
+export const cancelRevision = (projectId: string, jobId: string) =>
+  request<Job>(`/projects/${projectId}/jobs/${jobId}/cancel`, { method: 'POST' });
 export const projectEvents = (id: string) => request<ProgressEvent[]>(`/projects/${id}/events`);
 
 /**

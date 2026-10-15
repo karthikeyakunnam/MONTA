@@ -42,14 +42,19 @@ class StoryToTimelineTranslator:
         platform = pack.platform.platform if pack.platform else Platform.TIKTOK
         is_vertical = platform in (Platform.TIKTOK, Platform.INSTAGRAM, Platform.YOUTUBE_SHORT)
 
-        if is_vertical:
-            aspect_ratio = AspectRatio.PORTRAIT_9_16
-            width = 1080
-            height = 1920
+        aspect_choices = {
+            "9:16": (AspectRatio.PORTRAIT_9_16, 1080, 1920),
+            "16:9": (AspectRatio.LANDSCAPE_16_9, 1920, 1080),
+            "1:1": (AspectRatio.SQUARE_1_1, 1080, 1080),
+            "4:5": (AspectRatio.PORTRAIT_4_5, 1080, 1350),
+        }
+        chosen_aspect = (style_override or {}).get("aspect_ratio")
+        if chosen_aspect in aspect_choices:
+            aspect_ratio, width, height = aspect_choices[chosen_aspect]
+        elif is_vertical:
+            aspect_ratio, width, height = AspectRatio.PORTRAIT_9_16, 1080, 1920
         else:
-            aspect_ratio = AspectRatio.LANDSCAPE_16_9
-            width = 1920
-            height = 1080
+            aspect_ratio, width, height = AspectRatio.LANDSCAPE_16_9, 1920, 1080
 
         # 2. Build Clip Path Lookup Table
         clip_paths: dict[str, str] = {}
@@ -100,6 +105,7 @@ class StoryToTimelineTranslator:
                 source_path=source_path,
                 source_in_ms=source_in_ms,
                 source_out_ms=source_out_ms,
+                source_crop=metadata.content_crop,
                 timeline_start_ms=seg_start_ms,
                 timeline_end_ms=seg_end_ms,
                 speed=round(source_duration_ms / output_duration_ms, 4),

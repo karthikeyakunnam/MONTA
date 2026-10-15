@@ -523,8 +523,8 @@ test.describe('MONTA Video Creation Workflow', () => {
     await expect(failureBanner).toContainText('Processing failed');
     await expect(failureBanner).toContainText('FFmpeg encoding failed');
 
-    // Run again button is rendered
-    const runAgainBtn = failureBanner.locator('button:has-text("Run again")');
-    await expect(runAgainBtn).toBeVisible();
+    // Retry uses this failed job's saved inputs and the existing uploaded clips.
+    const retryBtn = failureBanner.locator('button:has-text("Retry this revision")');
+    await expect(retryBtn).toBeVisible();
   });
 });

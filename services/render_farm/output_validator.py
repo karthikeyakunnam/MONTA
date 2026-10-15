@@ -40,6 +40,7 @@ class RenderResult:
     # Captures the exact structured plan submitted to FFmpeg for project-level
     # traceability.  This is metadata, not a shell command to be re-executed.
     execution_plan: dict = field(default_factory=dict)
+    audio_duration_s: float | None = None
 
     @property
     def file_size_mb(self) -> float:
@@ -207,26 +208,48 @@ class OutputValidator:
 
         dur_str = video_stream.get("duration") or fmt.get("duration") or "0"
         actual_dur = float(dur_str)
+        audio_duration = None
+        if audio_stream:
+            audio_dur_str = audio_stream.get("duration") or fmt.get("duration")
+            if audio_dur_str is not None:
+                try:
+                    audio_duration = float(audio_dur_str)
+                except (TypeError, ValueError):
+                    audio_duration = None
 
         warnings: list[str] = []
+        failed_checks: list[str] = []
 
         # Validate resolution
         if actual_w != timeline.width or actual_h != timeline.height:
-            warnings.append(
+            issue = (
                 f"Resolution mismatch: expected {timeline.width}x{timeline.height}, got {actual_w}x{actual_h}"
             )
+            warnings.append(issue)
+            failed_checks.append(issue)
 
         # Validate duration
-        expected_dur = timeline.duration_s
+        expected_dur = timeline.render_duration_s
         dur_diff = abs(actual_dur - expected_dur)
-        if dur_diff > self.duration_tolerance_s and dur_diff > (expected_dur * 0.1):
-            warnings.append(
-                f"Duration deviation: expected {expected_dur:.2f}s, got {actual_dur:.2f}s (diff: {dur_diff:.2f}s)"
-            )
+        allowed_drift = max(self.duration_tolerance_s, timeline.duration_s * 0.05)
+        if dur_diff > allowed_drift:
+            issue = (f"Duration deviation: expected {expected_dur:.2f}s after transition overlaps, "
+                     f"got {actual_dur:.2f}s (diff: {dur_diff:.2f}s; tolerance {allowed_drift:.2f}s)")
+            warnings.append(issue)
+            failed_checks.append(issue)
 
         # Validate audio presence
         if not audio_stream:
-            warnings.append("Output file has no audio stream.")
+            issue = "Output file has no audio stream."
+            warnings.append(issue)
+            failed_checks.append(issue)
+        elif audio_duration is not None:
+            sync_drift = abs(audio_duration - actual_dur)
+            if sync_drift > max(0.15, actual_dur * 0.01):
+                issue = (f"Audio/video duration mismatch: video {actual_dur:.2f}s, "
+                         f"audio {audio_duration:.2f}s (diff: {sync_drift:.2f}s)")
+                warnings.append(issue)
+                failed_checks.append(issue)
 
         return RenderResult(
             success=True,
@@ -240,6 +263,8 @@ class OutputValidator:
             file_size_bytes=file_size,
             render_time_s=round(render_time_s, 2),
             encoder_used=encoder_used,
-            validation_passed=True,
+            validation_passed=not failed_checks,
             warnings=tuple(warnings),
+            error_message="; ".join(failed_checks),
+            audio_duration_s=round(audio_duration, 3) if audio_duration is not None else None,
         )

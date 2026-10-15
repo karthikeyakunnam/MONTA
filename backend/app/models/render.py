@@ -22,10 +22,12 @@ class RenderStatus(str, enum.Enum):
 
 class Render(Base):
     __tablename__ = "renders"
-    __table_args__ = (Index("ix_renders_project_created", "project_id", "created_at"),)
+    __table_args__ = (Index("ix_renders_project_created", "project_id", "created_at"),
+                      Index("ix_renders_job", "job_id"))
 
     id = Column(String(64), primary_key=True)
     project_id = Column(String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    job_id = Column(String(64), ForeignKey("jobs.id", ondelete="SET NULL", name="fk_renders_job_id_jobs"), nullable=True)
     
     status = Column(String(16), nullable=False, default=RenderStatus.QUEUED.value)
     resolution = Column(String(16), nullable=False)

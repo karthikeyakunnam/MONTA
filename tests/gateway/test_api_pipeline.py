@@ -18,6 +18,16 @@ from .conftest import AppHarness, MediaFixtures, requires_ffmpeg
 pytestmark = requires_ffmpeg
 
 
+async def test_local_production_frontend_port_is_allowed_by_cors(harness: AppHarness) -> None:
+    response = await harness.client.options("/projects", headers={
+        "Origin": "http://localhost:3100",
+        "Access-Control-Request-Method": "POST",
+        "Access-Control-Request-Headers": "content-type,x-monta-user",
+    })
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3100"
+
+
 async def project_with_clip(harness: AppHarness, media: MediaFixtures) -> dict:
     project = (await harness.client.post("/projects", json={
         "title": "Reel", "prompt": "Punchy 30 second reel, upbeat.", "target_platform": "instagram",

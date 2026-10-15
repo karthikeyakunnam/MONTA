@@ -23,6 +23,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import signal
 import stat
 import time
@@ -33,6 +34,7 @@ from typing import Protocol
 import numpy as np
 
 from shared.constants import MAX_CLIP_DURATION_SECONDS
+from shared.contracts.base import revalidate
 from shared.contracts.clip import ClipSource, TechnicalMetadata
 from shared.exceptions import MontaError
 from shared.observability import catalog as m
@@ -168,6 +170,11 @@ class FFmpegMediaBackend:
 
     async def _run(self, cmd: list[str]) -> bytes:
         """Run a media tool in its own process group; the group dies on timeout *or* cancellation."""
+        stdout, _ = await self._run_output(cmd)
+        return stdout
+
+    async def _run_output(self, cmd: list[str]) -> tuple[bytes, bytes]:
+        """Capture both streams for FFmpeg filters that report measurements on stderr."""
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -190,7 +197,7 @@ class FFmpegMediaBackend:
         m.MEDIA_TOOL.observe(time.perf_counter() - t0, tool=tool, outcome="ok" if proc.returncode == 0 else "error")
         if proc.returncode != 0:
             raise MediaToolError(f"{Path(cmd[0]).name} exited {proc.returncode}: {stderr.decode(errors='replace')[-400:]}")
-        return stdout
+        return stdout, stderr
 
     async def probe(self, source: ClipSource) -> TechnicalMetadata:
         path = check_input_path(source.path, self.allowed_roots)
@@ -201,7 +208,54 @@ class FFmpegMediaBackend:
         except json.JSONDecodeError as e:
             raise MediaToolError(f"{source.clip_id}: unreadable probe output") from e
         fp = await asyncio.to_thread(fingerprint_file, str(path))
-        return parse_probe(source, data, file_size=path.stat().st_size, fingerprint=fp, max_duration_s=self.max_duration_s)
+        meta = parse_probe(source, data, file_size=path.stat().st_size, fingerprint=fp,
+                           max_duration_s=self.max_duration_s)
+        crop = await self._detect_stable_content_crop(path, meta)
+        return revalidate(meta, content_crop=crop, content_crop_analyzed=True)
+
+    async def _detect_stable_content_crop(self, path: Path, meta: TechnicalMetadata) -> tuple[int, int, int, int] | None:
+        """Detect repeated embedded matte borders from three separated frames.
+
+        A single dark frame is not enough: a crop is accepted only when at least two
+        samples agree and leave substantial active picture in both dimensions.
+        This targeted pass handles wide active-picture footage embedded inside a
+        portrait canvas. It avoids interpreting dark scene edges in ordinary clips
+        as a crop: the detected rectangle must retain at least 90% of the canvas
+        width and remove a substantial, stable vertical matte.
+        """
+        if meta.rotation != 0 or meta.width >= meta.height:
+            return None
+        samples = sorted({min(max(meta.duration_s * part, 0.05), max(0.05, meta.duration_s - 0.05))
+                          for part in (0.12, 0.50, 0.88)})
+        found: list[tuple[int, int, int, int]] = []
+        for at in samples:
+            cmd = [self.ffmpeg, "-hide_banner", "-v", "info", "-nostdin", *PROTOCOL_ARGS,
+                   "-ss", f"{at:.3f}", "-i", str(path), "-frames:v", "3",
+                   "-vf", "cropdetect=limit=0.10:round=2:reset=0", "-f", "null", "-"]
+            try:
+                _, stderr = await self._run_output(cmd)
+            except MediaToolError:
+                continue
+            matches = re.findall(rb"crop=(\d+):(\d+):(\d+):(\d+)", stderr)
+            if matches:
+                found.append(tuple(map(int, matches[-1])))
+        if not found:
+            return None
+        counts = {crop: found.count(crop) for crop in set(found)}
+        crop = max(counts, key=counts.get)
+        if counts[crop] < 2:
+            return None
+        width, height, x, y = crop
+        if width <= 0 or height <= 0 or x + width > meta.width or y + height > meta.height:
+            return None
+        area_ratio = (width * height) / (meta.width * meta.height)
+        if area_ratio >= 0.88 or width / meta.width < 0.90 or height / meta.height < 0.30:
+            return None
+        if height / meta.height > 0.88 or y / meta.height < 0.08:
+            return None
+        if (meta.height - (y + height)) / meta.height < 0.08:
+            return None
+        return crop
 
     async def sample_luma(self, meta: TechnicalMetadata, *, max_frames: int = 240, width: int = 320) -> tuple[np.ndarray, float]:
         path = check_input_path(meta.path, self.allowed_roots)

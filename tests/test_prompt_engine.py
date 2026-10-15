@@ -5,6 +5,7 @@ import json
 import pytest
 
 from services.prompt_engine import IntentEngine
+from services.prompt_engine.engine import is_incremental_revision
 from services.prompt_engine.lexical_extractor import LexicalIntentExtractor
 from services.prompt_engine.normalizer import normalize, osa_distance
 from shared.contracts.vocab import CaptionStyle, ColorGrade, Emotion, Genre, MusicStyle, Pace, Platform, StoryRole
@@ -102,9 +103,49 @@ def test_decade_reference_is_not_a_duration():
     assert a.color_grade.value == ColorGrade.VINTAGE
 
 
+def test_observed_misspelled_duration_and_emotional_arc_are_extracted():
+    prompt = ("make a sad looking over and make it loook Like Happy ending but it is been with going sad part "
+              "make a vedeo 30 secounds")
+    a = lex.extract(prompt)
+    assert a.target_duration_s and a.target_duration_s.value == 30
+    assert ("secounds", "seconds") in {(c.original, c.corrected) for c in a.corrections}
+    assert a.arc_for("start") and a.arc_for("start").emotion == Emotion.EMOTIONAL
+    assert a.arc_for("end") and a.arc_for("end").emotion == Emotion.UPLIFTING
+
+
+def test_explicit_sad_hopeful_happy_arc_is_ordered():
+    a = lex.extract("sad start, hopeful middle, happy ending")
+    assert [beat.section for beat in a.pacing_arc] == ["start", "middle", "end"]
+    assert [beat.emotion for beat in a.pacing_arc] == [Emotion.EMOTIONAL, Emotion.INSPIRING, Emotion.UPLIFTING]
+
+
 def test_platform_longest_match_wins():
     assert lex.extract("youtube shorts edit").target_platform.value == Platform.YOUTUBE_SHORT
     assert lex.extract("tiktok edit").target_platform.value == Platform.TIKTOK
+
+
+def test_incremental_revision_keeps_unchanged_constraints_and_merges_only_the_new_arc_beat():
+    previous_prompt = "A 15 second travel montage with a calm mood, natural colors, no captions, and a slow start."
+    previous = lex.extract(previous_prompt)
+    delta = lex.extract("Make the ending happier with vibrant colors.")
+
+    assert is_incremental_revision(previous_prompt, "Make the ending happier with vibrant colors.")
+    merged = IntentEngine.merge_revision(previous, delta)
+    assert merged.genre.value == Genre.TRAVEL
+    assert merged.emotion.value == Emotion.CALM
+    assert merged.pace.value == Pace.SLOW
+    assert merged.target_duration_s.value == 15
+    assert merged.color_grade.value == ColorGrade.VIBRANT
+    assert merged.caption_style.value == CaptionStyle.NONE
+    assert merged.arc_for("start").pace == Pace.SLOW
+    assert merged.arc_for("end").emotion == Emotion.UPLIFTING
+    assert any("inherited unchanged requirements" in note for note in merged.revisions)
+
+
+def test_full_prompt_replacement_does_not_inherit_an_unrelated_prompt():
+    previous_prompt = "A calm travel montage with soft music and natural colors."
+    revised_prompt = "A fast wedding highlight with energetic music and bold reds."
+    assert not is_incremental_revision(previous_prompt, revised_prompt)
 
 
 # ---------------------------------------------------------------- ensemble

@@ -88,12 +88,18 @@ class FFmpegCompiler:
             v_chain = [f"[{in_idx}:v]trim=start={start_s:.4f}:end={end_s:.4f}"]
             v_chain.append("setpts=PTS-STARTPTS")
 
+            # Remove stable embedded black mats detected during media analysis
+            # before fitting/cropping the active picture to the export canvas.
+            if seg.source_crop:
+                crop_w, crop_h, crop_x, crop_y = seg.source_crop
+                v_chain.append(f"crop={crop_w}:{crop_h}:{crop_x}:{crop_y}")
+
             # Speed change
             if abs(seg.speed - 1.0) > 0.001:
                 v_chain.append(f"setpts={1.0 / seg.speed:.4f}*PTS")
 
             # Scale and aspect ratio
-            if timeline.scale_mode == ScaleMode.FILL:
+            if timeline.scale_mode == ScaleMode.FILL or seg.source_crop:
                 v_chain.append(f"scale={w}:{h}:force_original_aspect_ratio=increase,crop={w}:{h},setsar=1")
             elif timeline.scale_mode == ScaleMode.STRETCH:
                 v_chain.append(f"scale={w}:{h},setsar=1")
@@ -272,6 +278,16 @@ class FFmpegCompiler:
             filters.append(f"{all_a_nodes}amix=inputs={1 + len(ext_audio_nodes)}:duration=first:dropout_transition=0[a_mixed]")
             final_out_a = "a_mixed"
 
+        effective_duration = timeline.render_duration_s
+        # Transition filters shorten the video by their overlap. Align both final
+        # streams to that encoded duration; apad only supplies silence when source
+        # audio ends early, while atrim prevents music/source audio overruns.
+        filters.append(
+            f"[{final_out_v}]trim=duration={effective_duration:.4f},setpts=PTS-STARTPTS[v_final]"
+        )
+        filters.append(
+            f"[{final_out_a}]apad,atrim=duration={effective_duration:.4f},asetpts=PTS-STARTPTS[a_final]"
+        )
         full_filtergraph = ";".join(filters)
 
         # 5. Determine encoder and parameters
@@ -286,8 +302,8 @@ class FFmpegCompiler:
 
         argv.extend([
             "-filter_complex", full_filtergraph,
-            "-map", f"[{final_out_v}]",
-            "-map", f"[{final_out_a}]",
+            "-map", "[v_final]",
+            "-map", "[a_final]",
             *encoding_args,
             out_path,
         ])
@@ -296,7 +312,7 @@ class FFmpegCompiler:
             argv=tuple(argv),
             input_files=tuple(unique_inputs),
             output_path=out_path,
-            expected_duration_s=timeline.duration_s,
+            expected_duration_s=effective_duration,
             filter_graph=full_filtergraph,
             encoder_used=encoder,
         )

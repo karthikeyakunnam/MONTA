@@ -109,7 +109,7 @@ def test_compiler_generates_ducking_filtergraph(tmp_path):
     assert "afade=t=in" in filter_graph
     assert "afade=t=out" in filter_graph
     assert "-map" in cmd.argv
-    assert "[a_mixed]" in cmd.argv
+    assert "[a_mixed]" in filter_graph and "[a_final]" in cmd.argv
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")

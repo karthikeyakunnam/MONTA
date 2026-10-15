@@ -90,6 +90,38 @@ async def test_full_run_with_vision():
     assert [t.task_id for t in result.plan.execution_plan][-3:] == ["reconcile_intent", "design_story", "validate_story"]
 
 
+async def test_render_only_revision_reuses_analysis_and_revalidates_story():
+    media = SyntheticMediaBackend({cid: prof for cid, (prof, _) in GYM.items()})
+    pipeline = build(media)
+    first = await pipeline.run(project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM))
+    revised = await pipeline.run(
+        project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM),
+        cached_context=first.context_pack, reuse_story_plan=first.story,
+    )
+
+    assert revised.story == first.story
+    assert revised.validation is not None and revised.validation.passed
+    assert "story selection were reused" in revised.report.reasoning
+    assert "timeline, audio, and render are rebuilt" in revised.report.reasoning
+
+
+async def test_targeted_prompt_revision_preserves_base_intent_and_replans_the_story():
+    media = SyntheticMediaBackend({cid: prof for cid, (prof, _) in GYM.items()})
+    pipeline = build(media)
+    first = await pipeline.run(project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM))
+    revised = await pipeline.run(
+        project_id="p1", user_id="u1", prompt="Make the ending happier", clips=sources(GYM),
+        cached_context=first.context_pack, revision_base_intent=first.intent,
+    )
+
+    assert revised.story is not None and revised.story != first.story
+    assert revised.intent.genre == first.intent.genre
+    assert revised.intent.color_grade == first.intent.color_grade
+    assert revised.intent.arc_for("start") == first.intent.arc_for("start")
+    assert revised.intent.arc_for("end").emotion.value == "uplifting"
+    assert any("targeted revision merged" in note for note in revised.intent.revisions)
+
+
 async def test_signal_only_run_is_degraded_but_complete():
     media = SyntheticMediaBackend({cid: prof for cid, (prof, _) in GYM.items()})
     result = await build(media, vision=False).run(project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM))

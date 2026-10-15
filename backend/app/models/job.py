@@ -29,15 +29,18 @@ class JobState(str, enum.Enum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     SUBMIT_FAILED = "submit_failed"   # the broker was unreachable
+    CANCELLED = "cancelled"            # cancelled before a worker began
 
 
-TERMINAL_STATES = frozenset({JobState.SUCCEEDED.value, JobState.FAILED.value, JobState.SUBMIT_FAILED.value})
+TERMINAL_STATES = frozenset({JobState.SUCCEEDED.value, JobState.FAILED.value, JobState.SUBMIT_FAILED.value,
+                             JobState.CANCELLED.value})
 
 
 class Job(Base):
     __tablename__ = "jobs"
     __table_args__ = (Index("ix_jobs_project_created", "project_id", "created_at"),
-                      Index("ix_jobs_state", "state"))
+                      Index("ix_jobs_state", "state"),
+                      Index("uq_jobs_project_idempotency", "project_id", "idempotency_key", unique=True))
 
     id = Column(String(64), primary_key=True)
     project_id = Column(String(64), ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
@@ -49,6 +52,12 @@ class Job(Base):
     error = Column(Text, nullable=True)
     result = Column(JSON, nullable=True)
     trace_id = Column(String(64), nullable=True)
+    prompt_version = Column(Integer, nullable=True)
+    prompt_snapshot = Column(Text, nullable=True)
+    target_platform_snapshot = Column(String(32), nullable=True)
+    edit_options_snapshot = Column(JSON, nullable=True)
+    idempotency_key = Column(String(96), nullable=True)
+    retry_of_job_id = Column(String(64), nullable=True)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

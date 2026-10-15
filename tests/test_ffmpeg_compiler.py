@@ -63,3 +63,27 @@ def test_compiler_generates_valid_argv(tmp_path: Path):
     assert "eq=brightness=0.100:contrast=1.200" in cmd.filter_graph
     assert "fade=t=in:st=0:d=0.500" in cmd.filter_graph
     assert "atempo=1.5000" in cmd.filter_graph
+
+
+def test_compiler_trims_streams_to_transition_aware_duration_and_fills_detected_matte(tmp_path: Path):
+    first = TimelineSegmentIR(
+        segment_id="first", clip_id="portrait", source_path="/media/portrait.mp4",
+        source_in_ms=0, source_out_ms=3000, timeline_start_ms=0, timeline_end_ms=3000,
+    )
+    second = TimelineSegmentIR(
+        segment_id="second", clip_id="letterboxed", source_path="/media/letterboxed.mp4",
+        source_in_ms=0, source_out_ms=3000, timeline_start_ms=3000, timeline_end_ms=6000,
+        transition_in=TransitionType.CROSSFADE, transition_in_ms=250,
+        source_crop=(464, 256, 8, 298),
+    )
+    timeline = TimelineIR(
+        project_id="crop-and-duration", width=1080, height=1920, aspect_ratio=AspectRatio.PORTRAIT_9_16,
+        scale_mode=ScaleMode.FIT, video_segments=(first, second), total_duration_ms=6000,
+    )
+    command = FFmpegCompiler(ffmpeg_bin="ffmpeg").compile(timeline, output_path=tmp_path / "out.mp4", force_cpu=True)
+    assert timeline.render_duration_s == 5.75
+    assert command.expected_duration_s == 5.75
+    assert "crop=464:256:8:298" in command.filter_graph
+    assert "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" in command.filter_graph
+    assert "trim=duration=5.7500" in command.filter_graph
+    assert "atrim=duration=5.7500" in command.filter_graph

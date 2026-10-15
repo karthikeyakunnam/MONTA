@@ -92,7 +92,18 @@ def test_retry_manager_generates_targeted_strategy():
     assert "story_quality" in strategy["focus_areas"]
     assert "pacing" in strategy["focus_areas"]
     assert "music_sync" in strategy["skip_areas"]
+    assert strategy["implemented_focus_areas"] == ["story_quality", "pacing"]
+    assert strategy["deferred_focus_areas"] == []
     assert len(strategy["directives"]) == 2
+
+
+def test_retry_manager_does_not_claim_unsupported_dimensions_are_applied():
+    strategy = RetryManager().get_retry_strategy(
+        feedback=["Music is too loud", "Captions are late"],
+        scores={"music_sync": 4.0, "caption_timing": 5.0},
+    )
+    assert strategy["implemented_focus_areas"] == []
+    assert strategy["deferred_focus_areas"] == ["music_sync", "caption_timing"]
 
 
 async def test_critic_graph_execution():

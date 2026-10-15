@@ -13,6 +13,7 @@ class RetryManager:
 
     MAX_RETRIES = 3
     DEFAULT_THRESHOLD = 7.0
+    STORY_RETRY_AREAS = frozenset({"story_quality", "pacing"})
 
     def should_retry(
         self,
@@ -63,6 +64,8 @@ class RetryManager:
 
         return {
             "focus_areas": weak_areas,
+            "implemented_focus_areas": [dim for dim in weak_areas if dim in self.STORY_RETRY_AREAS],
+            "deferred_focus_areas": [dim for dim in weak_areas if dim not in self.STORY_RETRY_AREAS],
             "skip_areas": strong_areas,
             "strategy": "targeted" if weak_areas else "pass",
             "directives": directives,

@@ -1,0 +1,3 @@
+- [x] Fixed local Ollama discovery's event-loop lifecycle; live `build_pipeline()` now reports `vision_enabled=True`, `LocalVisionPipeline`, and `heuristic:judge.v1` (real model availability discovery, not inference). Command: elevated `python3` pipeline probe; exit 0.
+- [~] Added a persisted `content_crop_analyzed` bit and worker logic to refresh only old crop metadata and re-run only cache entries lacking vision provenance when local vision is available. Syntax compile passes; focused tests pending.
+- [~] Fixed migration render matching: output basename `_job_<hex>.mp4` corresponds to DB id `job_<hex>`. Fresh migration and live DB repair pending.

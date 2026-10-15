@@ -93,7 +93,7 @@ async def test_frame_bounding_to_max_vlm_frames():
     text_provider = ScriptedProvider([SAMPLE_STRUCTURED_JSON], vision=False)
 
     pipeline = LocalVisionPipeline(vlm_provider=vlm_provider, text_provider=text_provider)
-    # Pass 8 frames; should be sampled down to MAX_VLM_FRAMES (4)
+    # Pass 8 frames; local Ollama's default context only fits two keyframes.
     frames = [ImagePart(data=b"\xff\xd8\xff\xe0" + b"\x00" * 10) for _ in range(8)]
     times = [float(i) for i in range(8)]
 
@@ -104,6 +104,7 @@ async def test_frame_bounding_to_max_vlm_frames():
     user_msg = vlm_request[0]
     image_parts = [p for p in user_msg.parts if isinstance(p, ImagePart)]
     assert len(image_parts) <= MAX_VLM_FRAMES
+    assert len(image_parts) == 2
 
 
 async def test_vlm_empty_description_raises_error():
