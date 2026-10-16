@@ -256,7 +256,13 @@ async def test_learning_engine_baseline_vs_after_evaluation(tmp_path: Path):
 # 4. Feedback API Endpoints via TestClient
 # ===========================================================================
 
-def test_feedback_api_endpoints():
+def test_feedback_api_endpoints(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    # Keep the API's file-backed feedback store inside pytest's isolated workspace.
+    # This exercises the real endpoint without writing to the developer's home dir.
+    from app.api.v1 import feedback
+
+    monkeypatch.setattr(feedback._feedback_loop, "preferences_store",
+                        UserPreferencesStore(storage_dir=str(tmp_path)))
     client = TestClient(app)
     user_headers = {"X-MONTA-User": "api_test_user"}
 
