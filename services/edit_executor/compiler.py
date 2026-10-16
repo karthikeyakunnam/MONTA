@@ -121,6 +121,22 @@ class FFmpegCompiler:
                     eq_parts.append(f"gamma={seg.color.gamma:.3f}")
                 if eq_parts:
                     v_chain.append(f"eq={':'.join(eq_parts)}")
+                balance_parts = []
+                if seg.color.shadow_coolness:
+                    red = -0.08 * seg.color.shadow_coolness
+                    blue = 0.08 * seg.color.shadow_coolness
+                    balance_parts.extend((f"rs={red:.3f}", f"bs={blue:.3f}"))
+                if seg.color.highlight_warmth:
+                    red = 0.08 * seg.color.highlight_warmth
+                    blue = -0.08 * seg.color.highlight_warmth
+                    balance_parts.extend((f"rh={red:.3f}", f"bh={blue:.3f}"))
+                if balance_parts:
+                    v_chain.append(f"colorbalance={':'.join(balance_parts)}:pl=1")
+                if seg.color.vignette > 0:
+                    # FFmpeg's angle controls vignette radius: a smaller angle
+                    # produces a stronger edge falloff. 0 disables the filter.
+                    angle = 1.570796 - (1.35 * seg.color.vignette)
+                    v_chain.append(f"vignette=angle={angle:.4f}")
 
             # Video Fades
             if seg.fade_in_ms > 0:

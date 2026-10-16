@@ -32,6 +32,9 @@ _COLOR_GRADE_MAP: dict[str, ColorAdjustment] = {
     "warm": ColorAdjustment(brightness=0.01, contrast=1.08, saturation=1.12, gamma=1.05),
     "cool": ColorAdjustment(brightness=-0.01, contrast=1.10, saturation=0.95, gamma=0.96),
     "natural": ColorAdjustment(brightness=0.00, contrast=1.00, saturation=1.00, gamma=1.00),
+    "bw": ColorAdjustment(brightness=0.00, contrast=1.12, saturation=0.0, gamma=1.00),
+    "vintage": ColorAdjustment(brightness=0.02, contrast=0.92, saturation=0.82, gamma=1.04, highlight_warmth=0.12),
+    "neon": ColorAdjustment(brightness=0.01, contrast=1.22, saturation=1.55, gamma=1.00),
 }
 
 
@@ -118,6 +121,15 @@ class StyleMapper:
         if pack.intent.music_style and pack.intent.music_style.value:
             merged["music"] = pack.intent.music_style.value.value
 
+        brief = pack.intent.creative_brief
+        if "shadow_led_contrast" in brief.visual_treatments and brief.visual_confidence >= 0.45:
+            merged["color_grade"] = "dark"
+            merged.setdefault("shadow_coolness", 0.16)
+            if brief.energy_trajectory == "rising" and any(
+                tone.value in {"uplifting", "joyful", "inspiring"} for tone in brief.emotional_tones
+            ) and brief.emotion_confidence >= 0.25:
+                merged.setdefault("ending_highlight_warmth", 0.18)
+
         # 3. Layer user preferences if present
         if pack.user_preferences:
             prefs = pack.user_preferences
@@ -128,9 +140,14 @@ class StyleMapper:
             if prefs.music_style and prefs.music_style.value:
                 merged["music"] = prefs.music_style.value.value
 
+        # An explicitly selected preset replaces inferred and remembered style.
+        # Explicit individual controls below still take precedence over it.
+        if style_override and style_override.get("style_preset"):
+            merged.update(mapper.get_preset(str(style_override["style_preset"])))
+
         # 4. Explicit style override outranks inferred parameters
         if style_override:
-            merged.update(style_override)
+            merged.update({key: value for key, value in style_override.items() if key != "style_preset"})
 
         # Defaults if unspecified
         merged.setdefault("cut_speed", "medium")

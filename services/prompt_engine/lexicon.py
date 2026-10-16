@@ -18,7 +18,7 @@ evidence; extend it from the ``corrections``/``missing`` telemetry of real
 prompts rather than by intuition.
 """
 
-LEXICON_VERSION = "lexicon.v1"
+LEXICON_VERSION = "lexicon.v2"
 
 Signal = tuple[str, str, float]
 
@@ -144,7 +144,8 @@ _TABLES: list[dict[str, list[Signal]]] = [
     _many(PLATFORM, "general", {"website": 1.0, "landing page": 1.0, "presentation": 0.9, "tv": 0.8, "broadcast": 1.0}),
     # ---------------- color ----------------
     _many(COLOR, "dark", {
-        "dark": 1.0, "dark colors": 1.5, "dark colours": 1.5, "dark tones": 1.5, "dark grade": 1.5, "low key": 1.0,
+        "dark": 1.0, "shadowy": 1.0, "shadow-led": 1.0, "dark colors": 1.5, "dark colours": 1.5,
+        "dark tones": 1.5, "dark grade": 1.5, "low key": 1.0,
         "gloomy": 0.8, "noir": 0.6, "moody": 0.5,
     }),
     _many(COLOR, "orange_teal", {

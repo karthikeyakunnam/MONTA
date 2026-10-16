@@ -121,6 +121,39 @@ async def test_detected_portrait_matte_is_removed_in_the_actual_render(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_studio_color_controls_render_through_ffmpeg(tmp_path: Path):
+    source = _generate_synthetic_clip(tmp_path / "grade-source.mp4", duration_s=2.0, color="gray")
+    segment = TimelineSegmentIR(
+        segment_id="graded-shot", clip_id="grade", source_path=str(source), source_in_ms=0,
+        source_out_ms=1500, timeline_start_ms=0, timeline_end_ms=1500,
+        color=ColorAdjustment(brightness=-0.04, contrast=1.2, saturation=0.8,
+                              shadow_coolness=0.3, highlight_warmth=0.35, vignette=0.25),
+    )
+    timeline = TimelineIR(
+        project_id="studio-color-controls", width=320, height=180, fps=24,
+        aspect_ratio=AspectRatio.LANDSCAPE_16_9, scale_mode=ScaleMode.FILL,
+        video_segments=(segment,), total_duration_ms=1500,
+    )
+    baseline_timeline = TimelineIR.model_validate({
+        **timeline.model_dump(mode="python"),
+        "video_segments": ({**segment.model_dump(mode="python"), "color": None},),
+    })
+    baseline = await MediaRenderer().render(baseline_timeline, output_path=tmp_path / "baseline.mp4")
+    result = await MediaRenderer().render(timeline, output_path=tmp_path / "graded.mp4")
+    assert baseline.success and baseline.validation_passed
+    assert result.success and result.validation_passed
+    assert result.width == 320 and result.height == 180
+
+    def first_frame(path: Path) -> bytes:
+        return subprocess.run([
+            "ffmpeg", "-hide_banner", "-loglevel", "error", "-i", str(path),
+            "-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        ], check=True, capture_output=True).stdout
+
+    assert first_frame(tmp_path / "baseline.mp4") != first_frame(tmp_path / "graded.mp4")
+
+
+@pytest.mark.asyncio
 async def test_real_ffmpeg_subclip_and_concat(synthetic_media, tmp_path: Path):
     clip1, clip2 = synthetic_media
     out_file = tmp_path / "rendered_concat.mp4"

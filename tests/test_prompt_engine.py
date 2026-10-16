@@ -139,7 +139,30 @@ def test_incremental_revision_keeps_unchanged_constraints_and_merges_only_the_ne
     assert merged.caption_style.value == CaptionStyle.NONE
     assert merged.arc_for("start").pace == Pace.SLOW
     assert merged.arc_for("end").emotion == Emotion.UPLIFTING
+    assert merged.creative_brief.visual_treatments == previous.creative_brief.visual_treatments
     assert any("inherited unchanged requirements" in note for note in merged.revisions)
+
+
+def test_shadowy_happy_motivational_brief_keeps_visual_and_emotional_axes_separate():
+    intent = lex.extract("A shadowy, happy, motivational reel")
+    brief = intent.creative_brief
+    assert "shadow_led_contrast" in brief.visual_treatments
+    assert Emotion.MOTIVATIONAL in brief.emotional_tones
+    assert Emotion.UPLIFTING in brief.emotional_tones
+    assert brief.energy_trajectory == "rising"
+    assert intent.arc_for("start").pace == Pace.SLOW
+    assert intent.arc_for("middle").pace == Pace.MEDIUM
+    assert intent.arc_for("end").pace == Pace.FAST
+
+
+def test_targeted_happier_revision_preserves_shadowy_visual_treatment_and_motivation():
+    previous = lex.extract("A shadowy, happy, motivational reel with an uplifting resolution")
+    revised = lex.extract("Make the ending happier")
+    merged = IntentEngine.merge_revision(previous, revised)
+    assert "shadow_led_contrast" in merged.creative_brief.visual_treatments
+    assert Emotion.MOTIVATIONAL in merged.creative_brief.emotional_tones
+    assert Emotion.UPLIFTING in merged.creative_brief.emotional_tones
+    assert merged.creative_brief.energy_trajectory == "rising"
 
 
 def test_full_prompt_replacement_does_not_inherit_an_unrelated_prompt():
@@ -156,7 +179,7 @@ def _llm_json(**fields) -> str:
 
 async def test_no_llm_is_marked_degraded():
     a = await IntentEngine().analyze(NIKE)
-    assert a.extractors == ("lexical:lexicon.v1",)
+    assert a.extractors == ("lexical:lexicon.v2",)
     assert any("no text LLM" in d for d in a.degraded)
 
 

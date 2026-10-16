@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models import ClipStatus, JobState, ProjectStatus
-from shared.contracts.vocab import CaptionStyle, ColorGrade, MusicStyle
+from shared.contracts.vocab import CaptionStyle, ColorGrade, MusicStyle, Pace
 
 PLATFORMS = ("instagram", "tiktok", "youtube_short", "youtube", "general")
 
@@ -19,10 +19,26 @@ PLATFORMS = ("instagram", "tiktok", "youtube_short", "youtube", "general")
 class EditOptions(BaseModel):
     """Structured options that the existing story, style, audio and render layers consume."""
 
-    target_duration_s: float | None = Field(None, gt=0, le=600)
-    color_grade: ColorGrade | None = None
-    caption_style: CaptionStyle | None = None
-    music_style: MusicStyle | None = None
+    target_duration_s: float | None = Field(None, gt=0, le=600, exclude_if=lambda value: value is None)
+    color_grade: ColorGrade | None = Field(None, exclude_if=lambda value: value is None)
+    style_preset: Literal["cinematic", "trailer", "vlog", "hype", "montage"] | None = Field(
+        None, exclude_if=lambda value: value is None,
+    )
+    pace: Pace | None = Field(None, exclude_if=lambda value: value is None)
+    transition: Literal["cut", "crossfade", "fade_black", "fade_white", "wipe_left", "wipe_right", "slide_left", "slide_right"] | None = Field(
+        None, exclude_if=lambda value: value is None,
+    )
+    transition_duration_ms: int | None = Field(None, ge=0, le=2000, exclude_if=lambda value: value is None)
+    scale_mode: Literal["fit", "fill", "stretch"] | None = Field(None, exclude_if=lambda value: value is None)
+    brightness: float | None = Field(None, ge=-1, le=1, exclude_if=lambda value: value is None)
+    contrast: float | None = Field(None, ge=0, le=3, exclude_if=lambda value: value is None)
+    saturation: float | None = Field(None, ge=0, le=3, exclude_if=lambda value: value is None)
+    gamma: float | None = Field(None, ge=0.1, le=10, exclude_if=lambda value: value is None)
+    shadow_coolness: float | None = Field(None, ge=-1, le=1, exclude_if=lambda value: value is None)
+    highlight_warmth: float | None = Field(None, ge=-1, le=1, exclude_if=lambda value: value is None)
+    vignette: float | None = Field(None, ge=0, le=1, exclude_if=lambda value: value is None)
+    caption_style: CaptionStyle | None = Field(None, exclude_if=lambda value: value is None)
+    music_style: MusicStyle | None = Field(None, exclude_if=lambda value: value is None)
     add_music: bool = True
     aspect_ratio: Literal["9:16", "16:9", "1:1", "4:5"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
@@ -105,6 +121,7 @@ class ClipOut(BaseModel):
     duplicate_of: str | None = None
     rejection_issues: list[ValidationIssueOut] | None = None
     created_at: datetime | None = None
+    preview_url: str | None = None
 
 
 class UploadFileResult(BaseModel):

@@ -40,7 +40,7 @@ class TransitionType(StrEnum):
 
 
 class ColorAdjustment(BaseModel):
-    """Basic color parameters mapped to FFmpeg eq filter."""
+    """Bounded global grade controls mapped to FFmpeg color filters."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -48,6 +48,9 @@ class ColorAdjustment(BaseModel):
     contrast: float = Field(1.0, ge=0.0, le=3.0, description="0.0 to 3.0 (default: 1.0)")
     saturation: float = Field(1.0, ge=0.0, le=3.0, description="0.0 to 3.0 (default: 1.0)")
     gamma: float = Field(1.0, ge=0.1, le=10.0, description="0.1 to 10.0 (default: 1.0)")
+    shadow_coolness: float = Field(0.0, ge=-1.0, le=1.0)
+    highlight_warmth: float = Field(0.0, ge=-1.0, le=1.0)
+    vignette: float = Field(0.0, ge=0.0, le=1.0)
 
 
 class VideoSegmentIR(BaseModel):
@@ -72,6 +75,9 @@ class VideoSegmentIR(BaseModel):
     transition_in_ms: TimeMs = 0
     color: Optional[ColorAdjustment] = None
     is_hero: bool = False
+    act_id: str | None = None
+    narrative_role: str | None = None
+    emotional_stage: str | None = None
 
     @property
     def source_duration_ms(self) -> int:

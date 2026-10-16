@@ -48,6 +48,19 @@ class ArcBeat(BaseModel):
     reasoning: NonEmptyText
 
 
+class CreativeBrief(BaseModel):
+    """Keep visual treatment, emotional goals, and energy direction as separate axes."""
+
+    model_config = ConfigDict(frozen=True)
+
+    visual_treatments: tuple[str, ...] = ()
+    emotional_tones: tuple[Emotion, ...] = ()
+    energy_trajectory: Literal["rising", "steady", "falling"] | None = None
+    evidence: tuple[str, ...] = ()
+    visual_confidence: float = Field(0.0, ge=0.0, le=1.0)
+    emotion_confidence: float = Field(0.0, ge=0.0, le=1.0)
+
+
 class Ambiguity(BaseModel):
     """A field whose value could not be decided with confidence."""
 
@@ -102,6 +115,7 @@ class IntentAnalysis(BaseModel):
     reference_style: Explained[str] | None = Field(None, description="Named reference such as 'nike' or 'movie trailer'")
     target_duration_s: Explained[float] | None = None
     pacing_arc: tuple[ArcBeat, ...] = ()
+    creative_brief: CreativeBrief = Field(default_factory=CreativeBrief)
 
     ambiguities: tuple[Ambiguity, ...] = ()
     conflicts: tuple[Conflict, ...] = ()

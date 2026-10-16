@@ -21,6 +21,7 @@ import {
   formatBytes,
   formatDuration,
   getProject,
+  getTimeline,
   mediaUrl,
   projectEvents,
   retryRevision,
@@ -30,6 +31,7 @@ import {
   type EditOptions,
   type Job,
   type ProjectDetail,
+  type TimelineArtifact,
   type UploadLimits,
 } from '@/lib/api';
 import { ACTIVE_PIPELINE_STATUSES, canStartPipeline } from '@/lib/pipeline';
@@ -45,6 +47,7 @@ import { jobStateTone, projectStatusMeta } from '@/lib/status';
 const COLOR_GRADES = ['natural', 'vibrant', 'warm', 'cool', 'dark', 'orange_teal', 'bw', 'vintage', 'neon', 'high_contrast'];
 const CAPTION_STYLES = ['None', 'Minimal', 'Nike', 'Gymshark', 'David Goggins', 'Cinematic Documentary', 'Motivational', 'Alpha Mindset'];
 const MUSIC_STYLES = ['epic orchestral', 'hard trap', 'cinematic trailer', 'emotional piano', 'hybrid cinematic', 'sports anthem', 'lo-fi', 'acoustic', 'electronic', 'ambient'];
+const STYLE_PRESETS = ['cinematic', 'trailer', 'vlog', 'hype', 'montage'];
 const ACTIVE_JOB_STATES = ['pending', 'queued', 'running'];
 const defaultAspect = (platform: string) => ['instagram', 'tiktok', 'youtube_short'].includes(platform) ? '9:16' : '16:9';
 
@@ -56,6 +59,18 @@ function optionsForRevision(options: EditOptions): EditOptions {
     music_style: options.music_style ?? null,
     add_music: options.add_music ?? true,
     aspect_ratio: options.aspect_ratio ?? null,
+    style_preset: options.style_preset ?? null,
+    pace: options.pace ?? null,
+    transition: options.transition ?? null,
+    transition_duration_ms: options.transition_duration_ms ?? null,
+    scale_mode: options.scale_mode ?? null,
+    brightness: options.brightness ?? null,
+    contrast: options.contrast ?? null,
+    saturation: options.saturation ?? null,
+    gamma: options.gamma ?? null,
+    shadow_coolness: options.shadow_coolness ?? null,
+    highlight_warmth: options.highlight_warmth ?? null,
+    vignette: options.vignette ?? null,
   };
 }
 
@@ -65,6 +80,8 @@ export default function ProjectPage() {
   const router = useRouter();
 
   const [project, setProject] = useState<ProjectDetail | null>(null);
+  const [timeline, setTimeline] = useState<TimelineArtifact | null>(null);
+  const [timelineUnavailable, setTimelineUnavailable] = useState(false);
   const [limits, setLimits] = useState<UploadLimits | null>(null);
   const [loadFailure, setLoadFailure] = useState<Failure | null>(null);
   const [actionFailure, setActionFailure] = useState<Failure | null>(null);
@@ -77,7 +94,9 @@ export default function ProjectPage() {
   const [revisionPlatform, setRevisionPlatform] = useState('instagram');
   const [revisionOptions, setRevisionOptions] = useState<EditOptions>({
     target_duration_s: null, color_grade: null, caption_style: null, music_style: null,
-    add_music: true, aspect_ratio: null,
+    add_music: true, aspect_ratio: null, style_preset: null, pace: null, transition: null,
+    transition_duration_ms: null, scale_mode: null, brightness: null, contrast: null,
+    saturation: null, gamma: null, shadow_coolness: null, highlight_warmth: null, vignette: null,
   });
 
   const refresh = useCallback(async () => {
@@ -85,6 +104,13 @@ export default function ProjectPage() {
       const detail = await getProject(projectId);
       setProject(detail);
       setLoadFailure(null);
+      try {
+        setTimeline(await getTimeline(projectId));
+        setTimelineUnavailable(false);
+      } catch {
+        setTimeline(null);
+        setTimelineUnavailable(true);
+      }
     } catch (error) {
       setLoadFailure(toFailure(error, 'Loading this project'));
     }
@@ -225,6 +251,9 @@ export default function ProjectPage() {
     music_style: null,
     add_music: true,
     aspect_ratio: null,
+    style_preset: null, pace: null, transition: null, transition_duration_ms: null,
+    scale_mode: null, brightness: null, contrast: null, saturation: null, gamma: null,
+    shadow_coolness: null, highlight_warmth: null, vignette: null,
   };
   // Keep the page usable while rolling out the additive render-history schema to
   // a previously running API instance that still returns the older detail shape.
@@ -243,9 +272,13 @@ export default function ProjectPage() {
   const currentJobFeed = currentJob ? feed.filter((event) => event.job_id === currentJob.id) : [];
   const currentEvent = currentJobFeed[currentJobFeed.length - 1] ??
     (latest?.job_id === currentJob?.id ? latest : null);
+  const timelineJobId = timeline?.trace.job_id ?? null;
+  const planIsActive = Boolean(activeJob && timelineJobId === activeJob.id);
+  const planIsLatest = Boolean(latestJob && timelineJobId === latestJob.id);
+  const planHeading = planIsActive ? 'Proposed plan' : planIsLatest ? 'Rendered timeline' : 'Previous rendered timeline';
 
   return (
-    <>
+    <div className="studio-page">
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <Link href="/" className="muted" style={{ fontSize: 12.5 }}>
@@ -353,6 +386,83 @@ export default function ProjectPage() {
                   <span><strong>Add generated music</strong><small>Mixes with source audio using the existing soundtrack stage.</small></span>
                 </label>
               </div>
+              <details className="advanced-controls">
+                <summary>Advanced creative controls <span className="muted"> · style, grade, pacing, framing</span></summary>
+                <div className="grid cols-2 advanced-grid">
+                  <label className="field">
+                    <span>Style preset</span>
+                    <select value={revisionOptions.style_preset ?? ''} onChange={(event) => setRevisionOptions((current) => ({ ...current, style_preset: event.target.value || null }))}>
+                      <option value="">Use prompt and project style</option>
+                      {STYLE_PRESETS.map((preset) => <option key={preset} value={preset}>{styleLabel(preset)}</option>)}
+                    </select>
+                    <small className="muted">Preset sets a concrete base grade and transition style. Controls below override it.</small>
+                  </label>
+                  <label className="field">
+                    <span>Cut pace</span>
+                    <select value={revisionOptions.pace ?? ''} onChange={(event) => setRevisionOptions((current) => ({ ...current, pace: event.target.value || null }))}>
+                      <option value="">Follow creative brief</option>
+                      <option value="slow">Slow</option><option value="medium">Balanced</option>
+                      <option value="fast">Fast</option><option value="aggressive">Aggressive</option>
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Transition</span>
+                    <select value={revisionOptions.transition ?? ''} onChange={(event) => setRevisionOptions((current) => ({ ...current, transition: event.target.value || null }))}>
+                      <option value="">Style default</option>
+                      {['cut', 'crossfade', 'fade_black', 'fade_white', 'wipe_left', 'wipe_right', 'slide_left', 'slide_right'].map((transition) => <option key={transition} value={transition}>{transition.replace('_', ' ')}</option>)}
+                    </select>
+                  </label>
+                  <label className="field">
+                    <span>Transition duration · milliseconds</span>
+                    <input type="number" min="0" max="2000" step="25" value={revisionOptions.transition_duration_ms ?? ''} placeholder="Style default"
+                      onChange={(event) => setRevisionOptions((current) => ({ ...current, transition_duration_ms: event.target.value ? Number(event.target.value) : null }))} />
+                  </label>
+                  <label className="field">
+                    <span>Composition</span>
+                    <select value={revisionOptions.scale_mode ?? ''} onChange={(event) => setRevisionOptions((current) => ({ ...current, scale_mode: (event.target.value || null) as EditOptions['scale_mode'] }))}>
+                      <option value="">Automatic</option><option value="fill">Fill and crop</option>
+                      <option value="fit">Fit with padding</option><option value="stretch">Stretch</option>
+                    </select>
+                    <small className="muted">Detected baked-in borders are cropped before canvas fitting.</small>
+                  </label>
+                  <label className="field range-field">
+                    <span>Brightness <output>{(revisionOptions.brightness ?? 0).toFixed(2)}</output></span>
+                    <input aria-label="Brightness" type="range" min="-0.3" max="0.3" step="0.01" value={revisionOptions.brightness ?? 0}
+                      onChange={(event) => setRevisionOptions((current) => ({ ...current, brightness: Number(event.target.value) }))} />
+                  </label>
+                  <label className="field range-field">
+                    <span>Contrast <output>{(revisionOptions.contrast ?? 1).toFixed(2)}</output></span>
+                    <input aria-label="Contrast" type="range" min="0.5" max="2" step="0.01" value={revisionOptions.contrast ?? 1}
+                      onChange={(event) => setRevisionOptions((current) => ({ ...current, contrast: Number(event.target.value) }))} />
+                  </label>
+                  <label className="field range-field">
+                    <span>Saturation <output>{(revisionOptions.saturation ?? 1).toFixed(2)}</output></span>
+                    <input aria-label="Saturation" type="range" min="0" max="2" step="0.01" value={revisionOptions.saturation ?? 1}
+                      onChange={(event) => setRevisionOptions((current) => ({ ...current, saturation: Number(event.target.value) }))} />
+                  </label>
+                  <label className="field range-field">
+                    <span>Gamma <output>{(revisionOptions.gamma ?? 1).toFixed(2)}</output></span>
+                    <input aria-label="Gamma" type="range" min="0.6" max="1.6" step="0.01" value={revisionOptions.gamma ?? 1}
+                      onChange={(event) => setRevisionOptions((current) => ({ ...current, gamma: Number(event.target.value) }))} />
+                  </label>
+                  <label className="field range-field">
+                    <span>Cool shadows <output>{(revisionOptions.shadow_coolness ?? 0).toFixed(2)}</output></span>
+                    <input aria-label="Cool shadows" type="range" min="-1" max="1" step="0.01" value={revisionOptions.shadow_coolness ?? 0}
+                      onChange={(event) => setRevisionOptions((current) => ({ ...current, shadow_coolness: Number(event.target.value) }))} />
+                  </label>
+                  <label className="field range-field">
+                    <span>Warm highlights <output>{(revisionOptions.highlight_warmth ?? 0).toFixed(2)}</output></span>
+                    <input aria-label="Warm highlights" type="range" min="-1" max="1" step="0.01" value={revisionOptions.highlight_warmth ?? 0}
+                      onChange={(event) => setRevisionOptions((current) => ({ ...current, highlight_warmth: Number(event.target.value) }))} />
+                  </label>
+                  <label className="field range-field">
+                    <span>Vignette <output>{(revisionOptions.vignette ?? 0).toFixed(2)}</output></span>
+                    <input aria-label="Vignette" type="range" min="0" max="1" step="0.01" value={revisionOptions.vignette ?? 0}
+                      onChange={(event) => setRevisionOptions((current) => ({ ...current, vignette: Number(event.target.value) }))} />
+                  </label>
+                </div>
+                <p className="control-note">Speech-energy audio ducking is available in the soundtrack mix. Semantic speech timing, beat-aligned cuts, and tracked subject masks are unavailable in this local pipeline.</p>
+              </details>
               <div className="row" style={{ justifyContent: 'flex-end' }}>
                 <button type="button" className="btn secondary" onClick={() => setRevisionOpen(false)} disabled={revisionBusy}>Keep current version</button>
                 <button type="submit" className="btn" disabled={revisionBusy || running || usable.length === 0}>
@@ -435,6 +545,47 @@ export default function ProjectPage() {
             )}
           </div>
         )}
+      </section>
+
+      <section className="section" aria-labelledby="timeline-plan-heading">
+        <div className="section-head">
+          <div>
+            <h2 id="timeline-plan-heading">{timeline ? planHeading : 'Edit plan'}</h2>
+            <p className="hint">Canonical Timeline IR · shot ranges and audio treatment from the saved pipeline plan</p>
+          </div>
+          {timeline && <span className="hint">{timeline.timeline.width} × {timeline.timeline.height} · {formatDuration(timeline.timeline.total_duration_ms / 1000)}</span>}
+        </div>
+        {timeline ? (
+          <div className="plan-list">
+            {timeline.timeline.video_segments.map((segment, index) => {
+              const source = project.clips.find((clip) => clip.id === segment.clip_id);
+              return (
+                <article className="plan-row" key={segment.segment_id}>
+                  <div className="plan-index">{String(index + 1).padStart(2, '0')}</div>
+                  <div className="plan-main">
+                    <strong>{source?.original_filename ?? segment.clip_id}</strong>
+                    <span className="muted">{segment.narrative_role ?? segment.act_id ?? 'Story shot'}{segment.emotional_stage ? ` · ${segment.emotional_stage}` : ''}{segment.is_hero ? ' · hero shot' : ''}</span>
+                  </div>
+                  <div className="plan-range"><span>Source</span>{formatDuration(segment.source_in_ms / 1000)} → {formatDuration(segment.source_out_ms / 1000)}</div>
+                  <div className="plan-range"><span>Timeline</span>{formatDuration(segment.timeline_start_ms / 1000)} → {formatDuration(segment.timeline_end_ms / 1000)}</div>
+                  <div className="plan-transition">{segment.transition_in === 'cut' ? 'Cut' : `${segment.transition_in.replace('_', ' ')} · ${segment.transition_in_ms}ms`}</div>
+                </article>
+              );
+            })}
+            <div className="plan-support">
+              <strong>Audio</strong>
+              {timeline.timeline.audio_segments.length ? timeline.timeline.audio_segments.map((audio) => (
+                <span key={audio.track_id}>{audio.track_id} · {formatDuration(audio.timeline_start_ms / 1000)}–{formatDuration(audio.timeline_end_ms / 1000)} · {audio.ducking ? 'waveform ducking' : 'steady mix'} · {audio.volume.toFixed(2)}×</span>
+              )) : <span className="muted">No external music segments. Source audio availability is shown per clip below.</span>}
+              <strong>Captions</strong>
+              {timeline.trace.caption_segments?.length ? timeline.trace.caption_segments.map((caption, index) => (
+                <span key={`${caption.start}-${index}`}>{formatDuration(caption.start)}–{formatDuration(caption.end)} · {caption.text}</span>
+              )) : <span className="muted">{timeline.trace.caption_error ? `Caption request failed: ${timeline.trace.caption_error}` : timeline.trace.caption_state === 'no_speech_detected' ? 'Whisper ran; no speech segments were found.' : timeline.trace.caption_state === 'requested' ? 'Captions were requested; transcription is still pending.' : 'No rendered caption segments recorded for this timeline.'}</span>}
+            </div>
+          </div>
+        ) : timelineUnavailable ? (
+          <div className="empty">No persisted timeline is available yet. Start processing to build a real plan; a timeline from an earlier job may be restored when the worker saves it.</div>
+        ) : <div className="empty" role="status">Loading the saved edit plan…</div>}
       </section>
 
       <section className="section">
@@ -522,10 +673,14 @@ export default function ProjectPage() {
                   </p>
                   <div className="muted" style={{ fontSize: 12.5, lineHeight: 1.7 }}>
                     {job.target_platform_snapshot ?? '—'} · {snapshot?.target_duration_s ? `${snapshot.target_duration_s}s` : 'automatic duration'} ·
-                    {' '}{snapshot?.aspect_ratio ?? 'platform aspect'} · {snapshot?.color_grade ?? 'inferred look'} ·
+                    {' '}{snapshot?.aspect_ratio ?? 'platform aspect'} · {snapshot?.style_preset ?? snapshot?.color_grade ?? 'inferred look'} ·
+                    {' '}{snapshot?.pace ?? 'brief-led pace'} · {snapshot?.transition ?? 'style transition'} · {snapshot?.scale_mode ?? 'automatic framing'} ·
                     {' '}{snapshot?.add_music ? `music${snapshot.music_style ? ` · ${snapshot.music_style}` : ''}` : 'source audio'} ·
                     {' '}{snapshot?.caption_style ?? 'captions from prompt'}
                   </div>
+                  {changedSettings(project.jobs.find((candidate) => candidate.prompt_version === (job.prompt_version ?? 0) - 1)?.edit_options_snapshot, snapshot).length > 0 && (
+                    <p className="settings-diff"><strong>Changed settings:</strong> {changedSettings(project.jobs.find((candidate) => candidate.prompt_version === (job.prompt_version ?? 0) - 1)?.edit_options_snapshot, snapshot).join(' · ')}</p>
+                  )}
                   {job.revision_mode === 'incremental' && (
                     <p className="muted" style={{ fontSize: 12, margin: '8px 0 0' }}>
                       Targeted revision · kept {job.inherited_requirements.length
@@ -615,7 +770,9 @@ export default function ProjectPage() {
           <span>{editOptions.color_grade ?? 'Color selected from footage'}</span>
           <span>{!editOptions.caption_style ? 'Captions from prompt' : editOptions.caption_style === 'None' ? 'Captions off' : `${editOptions.caption_style} captions`}</span>
           <span>{editOptions.add_music ? `Music on · ${editOptions.music_style ?? 'from prompt'}` : 'Original audio only'}</span>
+          <span>H.264 MP4 · {aspectResolution(editOptions.aspect_ratio ?? platformAspectRatio(project.target_platform))}</span>
         </div>
+        <p className="hint" style={{ marginTop: 8 }}>Available export canvas presets: 1080 × 1920, 1920 × 1080, 1080 × 1080, and 1080 × 1350. Platform target and aspect are saved with each revision.</p>
       </section>
 
       {project.quota.length > 0 && (
@@ -651,6 +808,20 @@ export default function ProjectPage() {
           <h2>Clips</h2>
           <span className="hint">metadata read from the file itself by ffprobe</span>
         </div>
+        {usable.length > 0 && <div className="media-gallery">
+          {usable.map((clip) => (
+            <article className="media-card" key={clip.id}>
+              {clip.preview_url ? <video muted playsInline preload="metadata" src={mediaUrl(clip.preview_url)}
+                aria-label={`Preview of ${clip.original_filename}`} onLoadedMetadata={(event) => {
+                  const video = event.currentTarget;
+                  if (video.duration > 0.5) video.currentTime = 0.5;
+                }} /> : <div className="media-placeholder">Preview unavailable</div>}
+              <strong title={clip.original_filename}>{clip.original_filename}</strong>
+              <span>{formatDuration(clip.duration)} · {clip.resolution ?? 'resolution unknown'}</span>
+              <span>{clip.has_audio ? 'Audio available' : 'No source audio'} · {clip.video_codec ?? 'codec unknown'}</span>
+            </article>
+          ))}
+        </div>}
         <ClipTable clips={project.clips} onDelete={(id) => void removeClip(id)} busy={busy || running} />
       </section>
 
@@ -663,7 +834,7 @@ export default function ProjectPage() {
           <ProgressFeed events={currentJobFeed} />
         </div>
       </section>
-    </>
+    </div>
   );
 }
 
@@ -683,6 +854,39 @@ function platformAspect(platform: string): string {
   return ['instagram', 'tiktok', 'youtube_short'].includes(platform)
     ? '9:16 · vertical'
     : '16:9 · landscape';
+}
+
+function platformAspectRatio(platform: string): string {
+  return ['instagram', 'tiktok', 'youtube_short'].includes(platform) ? '9:16' : '16:9';
+}
+
+function aspectResolution(aspect: string): string {
+  const sizes: Record<string, string> = {
+    '9:16': '1080 × 1920', '16:9': '1920 × 1080', '1:1': '1080 × 1080', '4:5': '1080 × 1350',
+  };
+  return sizes[aspect] ?? aspect;
+}
+
+function styleLabel(preset: string): string {
+  const labels: Record<string, string> = {
+    cinematic: 'Cinematic · orange teal grade, dissolve',
+    trailer: 'Trailer · dark contrast, hard cuts',
+    vlog: 'Vlog · vibrant grade, dissolve',
+    hype: 'Hype · high contrast, wipe transition',
+    montage: 'Montage · natural grade, cuts',
+  };
+  return labels[preset] ?? preset;
+}
+
+function changedSettings(previous: EditOptions | null | undefined, current: EditOptions | null | undefined): string[] {
+  if (!current) return [];
+  if (!previous) return [];
+  const keys: Array<keyof EditOptions> = [
+    'target_duration_s', 'aspect_ratio', 'color_grade', 'style_preset', 'pace', 'transition',
+    'transition_duration_ms', 'scale_mode', 'brightness', 'contrast', 'saturation', 'gamma',
+    'shadow_coolness', 'highlight_warmth', 'vignette', 'music_style', 'add_music', 'caption_style',
+  ];
+  return keys.filter((key) => (previous[key] ?? null) !== (current[key] ?? null)).map((key) => String(key).replace(/_/g, ' '));
 }
 
 /** Same event can arrive from the REST replay and the socket; key on time+stage+clip. */

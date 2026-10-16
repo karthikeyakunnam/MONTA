@@ -33,7 +33,7 @@ from services.prompt_engine.llm_extractor import LLMField, LLMIntent, LLMIntentE
 from shared.contracts.base import revalidate
 from shared.contracts.clip import ClipIntelligence
 from shared.contracts.explain import Evidence, Explained, clamp
-from shared.contracts.intent import Ambiguity, ArcBeat, Conflict, IntentAnalysis, MissingInfo
+from shared.contracts.intent import Ambiguity, ArcBeat, Conflict, CreativeBrief, IntentAnalysis, MissingInfo
 from shared.contracts.vocab import Emotion, Genre
 from shared.providers.base import ModelProvider
 from shared.providers.errors import ProviderError
@@ -156,6 +156,26 @@ class IntentEngine:
         beats = {beat.section: beat for beat in previous.pacing_arc}
         beats.update({beat.section: beat for beat in revised.pacing_arc})
         updates["pacing_arc"] = tuple(beats[s] for s in ("start", "middle", "end") if s in beats)
+
+        prior_brief = previous.creative_brief
+        revised_brief = revised.creative_brief
+        localized_emotion = localized_to_arc(revised.emotion)
+        if not revised_brief.visual_treatments:
+            visual_treatments = prior_brief.visual_treatments
+        else:
+            visual_treatments = revised_brief.visual_treatments
+        if localized_emotion:
+            emotional_tones = tuple(dict.fromkeys((*prior_brief.emotional_tones, *revised_brief.emotional_tones)))
+        elif revised_brief.emotional_tones:
+            emotional_tones = revised_brief.emotional_tones
+        else:
+            emotional_tones = prior_brief.emotional_tones
+        updates["creative_brief"] = CreativeBrief(
+            visual_treatments=visual_treatments,
+            emotional_tones=emotional_tones,
+            energy_trajectory=revised_brief.energy_trajectory or prior_brief.energy_trajectory,
+            evidence=tuple(dict.fromkeys((*prior_brief.evidence, *revised_brief.evidence))),
+        )
 
         ambiguities = list(revised.ambiguities)
         known_ambiguities = {(item.field, tuple(item.candidates)) for item in ambiguities}

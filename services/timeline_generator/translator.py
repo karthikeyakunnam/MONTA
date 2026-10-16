@@ -66,7 +66,18 @@ class StoryToTimelineTranslator:
         resolved_style = StyleMapper.resolve_style_for_pack(pack, style_override)
 
         color_adj = StyleMapper.resolve_color_adjustment(resolved_style.get("color_grade"))
+        grade_values = color_adj.model_dump(mode="python") if color_adj else ColorAdjustment().model_dump(mode="python")
+        explicit_color = {key: resolved_style[key] for key in (
+            "brightness", "contrast", "saturation", "gamma", "shadow_coolness", "highlight_warmth", "vignette"
+        ) if key in resolved_style}
+        if resolved_style.get("shadow_coolness") is not None:
+            explicit_color["shadow_coolness"] = resolved_style["shadow_coolness"]
+        if explicit_color:
+            grade_values.update(explicit_color)
+        color_adj = ColorAdjustment.model_validate(grade_values)
         scale_mode = StyleMapper.resolve_scale_mode(resolved_style.get("scale_mode"))
+        act_ids = list(dict.fromkeys(cut.act_id for cut in story.timeline))
+        act_rationales = {act.act_id: act for act in story.reasoning.acts}
 
         # 4. Translate the *actual* ordered StoryPlan cuts.
         video_segments: list[TimelineSegmentIR] = []
@@ -99,6 +110,23 @@ class StoryToTimelineTranslator:
             fade_in_ms = 250 if i == 0 else 0
             fade_out_ms = 250 if i == len(story.timeline) - 1 else 0
 
+            segment_color = color_adj
+            brief = pack.intent.creative_brief
+            if (
+                i == len(story.timeline) - 1
+                and resolved_style.get("ending_highlight_warmth")
+                and not explicit_color.get("highlight_warmth")
+            ):
+                segment_color = ColorAdjustment.model_validate({
+                    **color_adj.model_dump(mode="python"),
+                    "highlight_warmth": resolved_style["ending_highlight_warmth"],
+                })
+            act_index = act_ids.index(cut.act_id) if cut.act_id in act_ids else 0
+            act_count = len(act_ids)
+            emotional_stage = "opening" if act_index == 0 else (
+                "resolution" if act_index == act_count - 1 else "development"
+            )
+            rationale = act_rationales.get(cut.act_id)
             seg_ir = TimelineSegmentIR(
                 segment_id=f"seg_{cut.index:03d}_{cut.clip_id}",
                 clip_id=cut.clip_id,
@@ -115,8 +143,11 @@ class StoryToTimelineTranslator:
                 fade_out_ms=fade_out_ms,
                 transition_in=trans_type,
                 transition_in_ms=trans_ms,
-                color=color_adj,
+                color=segment_color,
                 is_hero=cut.is_hero,
+                act_id=cut.act_id,
+                narrative_role=cut.purpose or (rationale.purpose if rationale else None),
+                emotional_stage=emotional_stage,
             )
             video_segments.append(seg_ir)
             previous_end_ms = seg_end_ms

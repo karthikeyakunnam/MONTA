@@ -12,7 +12,10 @@ Project lifecycle and the pipeline trigger.
     GET    /projects/{id}/events     progress events already recorded (websocket replay)
 """
 
+import mimetypes
+
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import current_user_id, get_db, get_limits, get_progress_bus, get_queue, get_storage
@@ -88,7 +91,7 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
         edit_options=EditOptions.model_validate(project.edit_options or {}),
         prompt_version=project.prompt_version or 1,
         created_at=project.created_at, updated_at=project.updated_at, clip_count=len(usable),
-        clips=[ClipOut.model_validate(c) for c in summary.clips],
+        clips=[_clip_out(c) for c in summary.clips],
         jobs=[_job_out(j) for j in summary.jobs],
         quota=quota, total_duration_s=summary.total_duration_s,
         story_pattern=story.get("story_pattern"),
@@ -112,6 +115,12 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
             for r in summary.renders
         ],
     )
+
+
+def _clip_out(clip) -> ClipOut:
+    payload = ClipOut.model_validate(clip).model_dump(mode="python")
+    payload["preview_url"] = f"/api/v1/projects/{clip.project_id}/clips/{clip.id}/preview"
+    return ClipOut.model_validate(payload)
 
 
 def _valid_render_path(path: str) -> bool:
@@ -291,4 +300,30 @@ async def project_clips(project_id: str, include_rejected: bool = Query(True), d
     except ProjectNotFound as e:
         raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
     clips = summary.clips if include_rejected else [c for c in summary.clips if c.status != ClipStatus.REJECTED.value]
-    return [ClipOut.model_validate(c) for c in clips]
+    return [_clip_out(c) for c in clips]
+
+
+@router.get("/{project_id}/clips/{clip_id}/preview")
+async def clip_preview(
+    project_id: str,
+    clip_id: str,
+    db: AsyncSession = Depends(get_db),
+    user_id: str = Depends(current_user_id),
+    storage: LocalMediaStorage = Depends(get_storage),
+) -> FileResponse:
+    """Serve an uploaded source preview after project ownership and path checks."""
+    try:
+        summary = await _service(db).summary(project_id, user_id)
+    except ProjectNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found") from e
+    clip = next((item for item in summary.clips if item.id == clip_id), None)
+    if clip is None or clip.status == ClipStatus.REJECTED.value:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Clip preview not found")
+    try:
+        path = storage.path_for(clip.storage_key)
+    except (OSError, ValueError) as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Clip preview not found") from e
+    if not path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Clip preview file is unavailable")
+    media_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    return FileResponse(path, media_type=media_type, filename=clip.original_filename)

@@ -385,18 +385,19 @@ class MontaPipeline:
 def _apply_project_options(intent: IntentAnalysis, target_platform: str | None, options: dict) -> IntentAnalysis:
     """Apply explicit project form choices after prompt inference, with visible provenance."""
     from shared.contracts.explain import Evidence, Explained
-    from shared.contracts.vocab import CaptionStyle, ColorGrade, MusicStyle, Platform
+    from shared.contracts.vocab import CaptionStyle, ColorGrade, MusicStyle, Pace, Platform
 
     value_types = {
         "target_platform": Platform,
         "color_grade": ColorGrade,
         "caption_style": CaptionStyle,
         "music_style": MusicStyle,
+        "pace": Pace,
     }
     selected = dict(options)
     if target_platform:
         selected["target_platform"] = target_platform
-    field_names = {"target_platform", "color_grade", "caption_style", "music_style", "target_duration_s"}
+    field_names = {"target_platform", "color_grade", "caption_style", "music_style", "target_duration_s", "pace"}
     payload = intent.model_dump(mode="python")
     for name, raw_value in selected.items():
         if name not in field_names or raw_value is None:

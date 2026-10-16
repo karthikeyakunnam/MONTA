@@ -154,6 +154,12 @@ The project follows a 4-phase roadmap from the launch readiness review. Phase 1 
 - No project board or issue tracker is accessible to track progress against the roadmap.
 - No timeline or sprint schedule is documented beyond the phase targets.
 
+### Update: studio-control validation (2026-10-16)
+- The Celery worker path now has live API-to-MP4 evidence for explicit color grade, pace, transition type/duration, audio enable/style, aspect ratio, all three composition modes, color sliders, target duration, and captions-off. This verifies these option mappings in the worker renderer; it does not certify the separate master-graph wiring.
+- Live testing found and fixed two integration defects: inferred style overrode an explicitly selected preset, and the soundtrack ignored preset music. It also found and fixed null optional studio fields leaking into serialized `EditOptions` responses. The full backend suite now reports 596 passed, 18 deselected, 0 failed.
+- The verification project used only generated color-bar clips. Therefore shot relevance, emotional progression, human-perceived color quality, and cinematic quality remain unvalidated; critic scores on these fixtures are not quality evidence. Caption-style rendering is also blocked by absent Whisper `large-v3` weights.
+- **Next quality gate:** run the same isolated-control and same-project revision checks with real multi-shot user footage; add caption-style verification only when Whisper weights are available. Do not treat synthetic render success as completion of the footage-quality phase.
+
 ---
 
 ## Are there any open GitHub issues or project boards?

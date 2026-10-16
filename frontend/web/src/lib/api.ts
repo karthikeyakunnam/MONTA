@@ -45,6 +45,7 @@ export interface Clip {
   duplicate_of: string | null;
   rejection_issues: ValidationIssue[] | null;
   created_at: string | null;
+  preview_url?: string | null;
 }
 
 export interface Job {
@@ -114,6 +115,57 @@ export interface EditOptions {
   music_style: string | null;
   add_music: boolean;
   aspect_ratio?: string | null;
+  style_preset?: string | null;
+  pace?: string | null;
+  transition?: string | null;
+  transition_duration_ms?: number | null;
+  scale_mode?: 'fit' | 'fill' | 'stretch' | null;
+  brightness?: number | null;
+  contrast?: number | null;
+  saturation?: number | null;
+  gamma?: number | null;
+  shadow_coolness?: number | null;
+  highlight_warmth?: number | null;
+  vignette?: number | null;
+}
+
+export interface TimelineArtifact {
+  project_id: string;
+  timeline: {
+    width: number;
+    height: number;
+    fps: number;
+    total_duration_ms: number;
+    video_segments: Array<{
+      segment_id: string;
+      clip_id: string;
+      source_in_ms: number;
+      source_out_ms: number;
+      timeline_start_ms: number;
+      timeline_end_ms: number;
+      transition_in: string;
+      transition_in_ms: number;
+      emotional_stage?: string | null;
+      narrative_role?: string | null;
+      act_id?: string | null;
+      is_hero: boolean;
+    }>;
+    audio_segments: Array<{
+      track_id: string;
+      timeline_start_ms: number;
+      timeline_end_ms: number;
+      volume: number;
+      ducking: boolean;
+    }>;
+  };
+  trace: {
+    job_id?: string;
+    prompt_version?: number;
+    edit_options?: EditOptions;
+    caption_state?: string;
+    caption_error?: string;
+    caption_segments?: Array<{ start: number; end: number; text: string }>;
+  };
 }
 
 export interface Render {
@@ -265,6 +317,7 @@ export const health = () => request<Health>('/health');
 export const uploadLimits = () => request<UploadLimits>('/upload/limits');
 export const listProjects = () => request<Project[]>('/projects');
 export const getProject = (id: string) => request<ProjectDetail>(`/projects/${id}`);
+export const getTimeline = (id: string) => request<TimelineArtifact>(`/timeline/${id}`);
 export const createProject = (body: {
   title: string;
   prompt: string;

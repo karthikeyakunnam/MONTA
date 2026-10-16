@@ -5,6 +5,7 @@ import pytest
 from services.edit_executor.compiler import FFmpegCompiler
 from services.style_engine.mapper import StyleMapper
 from services.timeline_generator.translator import StoryToTimelineTranslator
+from workers.tasks.pipeline_tasks import _resolved_music_style, _style_override
 from shared.contracts.clip import TechnicalMetadata
 from shared.contracts.context import ContextPack, PlatformSpec, UserPreferences
 from shared.contracts.explain import Explained, Score
@@ -159,6 +160,27 @@ def test_style_mapper_resolves_presets():
     assert hype["color_grade"] == "high_contrast"
 
 
+def test_explicit_style_preset_overrides_inferred_color_but_explicit_grade_wins():
+    pack = _sample_pack(color_grade="vibrant")
+
+    preset_style = StyleMapper.resolve_style_for_pack(pack, {"style_preset": "trailer"})
+    assert preset_style["color_grade"] == "dark"
+
+    explicit_style = StyleMapper.resolve_style_for_pack(
+        pack, {"style_preset": "trailer", "color_grade": "warm"}
+    )
+    assert explicit_style["color_grade"] == "warm"
+
+
+def test_soundtrack_uses_preset_music_unless_music_style_is_explicit():
+    pack = _sample_pack()
+
+    assert _resolved_music_style(pack, _style_override({"style_preset": "vlog"})) == "lo_fi"
+    assert _resolved_music_style(
+        pack, _style_override({"style_preset": "vlog", "music_style": "ambient"})
+    ) == "ambient"
+
+
 def test_style_mapper_color_adjustments():
     ot_adj = StyleMapper.resolve_color_adjustment("orange_teal")
     assert ot_adj is not None
@@ -191,6 +213,45 @@ def test_story_to_timeline_applies_style_engine_color_and_scale():
     # Second segment should have crossfade transition
     assert timeline.video_segments[1].transition_in == TransitionType.CROSSFADE
     assert timeline.video_segments[1].transition_in_ms == 300
+
+
+def test_studio_color_controls_compile_to_timeline_ir_and_ffmpeg_filters(tmp_path):
+    pack = _sample_pack()
+    story = _make_story()
+    options = {
+        "style_preset": "trailer", "scale_mode": "fill", "pace": "fast",
+        "transitions": "wipe_right", "transition_ms": 400,
+        "brightness": -0.04, "contrast": 1.4, "saturation": 0.8, "gamma": 0.94,
+        "shadow_coolness": 0.3, "highlight_warmth": 0.4, "vignette": 0.35,
+    }
+    timeline = StoryToTimelineTranslator.translate(pack=pack, story=story, style_override=options)
+    assert timeline.scale_mode == ScaleMode.FILL
+    assert timeline.video_segments[0].color.brightness == pytest.approx(-0.04)
+    assert timeline.video_segments[1].transition_in == TransitionType.WIPE_RIGHT
+    assert timeline.video_segments[1].transition_in_ms == 400
+    assert timeline.video_segments[1].narrative_role == "climax"
+    assert timeline.video_segments[1].emotional_stage == "resolution"
+    graph = FFmpegCompiler().compile(timeline, tmp_path / "studio.mp4", force_cpu=True).filter_graph
+    assert "eq=brightness=-0.040:contrast=1.400:saturation=0.800:gamma=0.940" in graph
+    assert "colorbalance=rs=-0.024:bs=0.024:rh=0.032:bh=-0.032:pl=1" in graph
+    assert "vignette=angle=" in graph
+
+
+def test_conflicting_mood_brief_becomes_dark_treatment_with_warm_resolution():
+    from services.prompt_engine.lexical_extractor import LexicalIntentExtractor
+
+    base = _sample_pack()
+    payload = base.model_dump(mode="python")
+    payload["intent"] = LexicalIntentExtractor().extract("A shadowy, happy, motivational reel").model_dump(mode="python")
+    pack = ContextPack.model_validate(payload)
+    timeline = StoryToTimelineTranslator.translate(_make_story(), pack)
+    opening = timeline.video_segments[0]
+    ending = timeline.video_segments[-1]
+    assert opening.color.contrast > 1.0
+    assert opening.color.shadow_coolness > 0.0
+    assert ending.color.highlight_warmth > 0.0
+    assert opening.emotional_stage == "opening"
+    assert ending.emotional_stage == "resolution"
 
 
 def test_ffmpeg_compiler_compiles_styled_filters(tmp_path):

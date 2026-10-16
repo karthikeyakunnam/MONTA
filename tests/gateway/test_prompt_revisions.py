@@ -61,7 +61,11 @@ async def test_revision_keeps_project_uploads_options_and_previous_render(
         "prompt": "A calm 30 second story with a hopeful middle and a happy ending",
         "target_platform": "youtube_short",
         "edit_options": {"target_duration_s": 30, "color_grade": "vibrant", "add_music": True,
-                          "music_style": "emotional piano", "caption_style": "Minimal", "aspect_ratio": "9:16"},
+                          "music_style": "emotional piano", "caption_style": "Minimal", "aspect_ratio": "9:16",
+                          "style_preset": "cinematic", "pace": "fast", "transition": "crossfade",
+                          "transition_duration_ms": 325, "scale_mode": "fill", "brightness": -0.04,
+                          "contrast": 1.2, "saturation": 0.9, "gamma": 0.98,
+                          "shadow_coolness": 0.2, "highlight_warmth": 0.3, "vignette": 0.15},
         "idempotency_key": "revise-version-two-001",
     }
     response = await harness.client.post(f"/projects/{project['id']}/revisions", json=payload)
@@ -78,6 +82,13 @@ async def test_revision_keeps_project_uploads_options_and_previous_render(
     assert detail["jobs"][0]["id"] == revision["job_id"]
     assert detail["jobs"][0]["prompt_snapshot"] == payload["prompt"]
     assert detail["jobs"][0]["edit_options_snapshot"]["color_grade"] == "vibrant"
+    for name, value in {
+        "style_preset": "cinematic", "pace": "fast", "transition": "crossfade",
+        "transition_duration_ms": 325, "scale_mode": "fill", "brightness": -0.04,
+        "contrast": 1.2, "saturation": 0.9, "gamma": 0.98,
+        "shadow_coolness": 0.2, "highlight_warmth": 0.3, "vignette": 0.15,
+    }.items():
+        assert detail["jobs"][0]["edit_options_snapshot"][name] == value
     assert detail["jobs"][1]["prompt_snapshot"] == "A calm 15 second story"
     assert detail["jobs"][1]["edit_options_snapshot"]["color_grade"] == "warm"
     assert detail["renders"][0]["job_id"] == initial.json()["job_id"]
@@ -95,6 +106,21 @@ async def test_revision_keeps_project_uploads_options_and_previous_render(
     assert failed_detail["render_url"] == f"/api/v1/render/{render_id}/download"
     assert failed_detail["renders"][0]["job_id"] == initial.json()["job_id"]
     assert next(render for render in failed_detail["renders"] if render["id"] == render_id)["is_current"] is True
+
+
+@pytest.mark.asyncio
+async def test_clip_preview_serves_only_owned_project_uploads(harness: AppHarness, media: MediaFixtures) -> None:
+    project = await _project_with_clip(harness, media)
+    detail = (await harness.client.get(f"/projects/{project['id']}")).json()
+    clip = detail["clips"][0]
+    assert clip["preview_url"].endswith(f"/clips/{clip['id']}/preview")
+    route = clip["preview_url"].removeprefix("/api/v1")
+    response = await harness.client.get(route)
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("video/")
+    assert len(response.content) == clip["file_size_bytes"]
+    denied = await harness.client.get(route, headers={"X-MONTA-User": "another-user"})
+    assert denied.status_code == 404
 
 
 @pytest.mark.asyncio

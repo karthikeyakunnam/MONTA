@@ -21,7 +21,7 @@ from enum import StrEnum
 from services.prompt_engine import lexicon as L
 from services.prompt_engine.normalizer import BOUNDARY, NormalizedPrompt, normalize
 from shared.contracts.explain import Evidence, Explained, clamp
-from shared.contracts.intent import Ambiguity, ArcBeat, Conflict, IntentAnalysis, MissingInfo
+from shared.contracts.intent import Ambiguity, ArcBeat, Conflict, CreativeBrief, IntentAnalysis, MissingInfo
 from shared.contracts.vocab import CaptionStyle, ColorGrade, Emotion, Genre, MusicStyle, Pace, Platform
 from shared.text import inflection_bases
 
@@ -305,6 +305,7 @@ class LexicalIntentExtractor:
 
         conflicts = self._conflicts(r, fields)
         arc = self._arc(r)
+        creative_brief = self._creative_brief(r)
         duration = None
         if r.duration:
             seconds, span = r.duration
@@ -324,6 +325,7 @@ class LexicalIntentExtractor:
             genre=fields[L.GENRE], emotion=fields[L.EMOTION], pace=fields[L.PACE], target_platform=fields[L.PLATFORM],
             color_grade=fields[L.COLOR], caption_style=fields[L.CAPTION], music_style=fields[L.MUSIC],
             reference_style=reference, target_duration_s=duration, pacing_arc=arc,
+            creative_brief=creative_brief,
             ambiguities=tuple(ambiguities), conflicts=tuple(conflicts), missing=tuple(missing),
             overall_confidence=round(clamp(overall), 3),
             extractors=(f"{self.name}:{L.LEXICON_VERSION}",),
@@ -403,7 +405,80 @@ class LexicalIntentExtractor:
                     reasoning="Inferred a sad opening because positive sad-language precedes the requested happy ending.",
                 ))
                 beats.sort(key=lambda beat: ("start", "middle", "end").index(beat.section))
+        # Motivational intent describes purposeful rising energy. When the user
+        # has not supplied section-specific direction, make that trajectory
+        # explicit without changing the mood into one averaged emotion.
+        has_motivation = r.global_scores.get(L.EMOTION, {}).get(Emotion.MOTIVATIONAL.value, 0) > 0
+        has_positive_resolution = any(
+            r.global_scores.get(L.EMOTION, {}).get(emotion.value, 0) > 0
+            for emotion in (Emotion.UPLIFTING, Emotion.JOYFUL, Emotion.INSPIRING)
+        )
+        if has_motivation and has_positive_resolution:
+            by_section = {beat.section: beat for beat in beats}
+            defaults = {
+                "start": (Pace.SLOW, None, "motivational build: opening",
+                          "A motivational positive brief gets a deliberate lower-energy opening."),
+                "middle": (Pace.MEDIUM, None, "motivational build: escalation",
+                           "The middle escalates purposefully toward the requested positive resolution."),
+                "end": (Pace.FAST, Emotion.UPLIFTING, "positive motivational ending",
+                        "A rising energy trajectory culminates in the requested uplifting finish."),
+            }
+            for section, (pace_default, emotion_default, span, reasoning) in defaults.items():
+                prior = by_section.get(section)
+                if prior is None:
+                    by_section[section] = ArcBeat(
+                        section=section, pace=pace_default, emotion=emotion_default,
+                        span=span, reasoning=reasoning,
+                    )
+                elif prior.pace is None or (section == "end" and prior.emotion is None):
+                    by_section[section] = ArcBeat(
+                        section=section, pace=prior.pace or pace_default,
+                        emotion=prior.emotion or (emotion_default if section == "end" else None),
+                        span=prior.span,
+                        reasoning=prior.reasoning + " The remaining beats follow the explicit rising-energy brief.",
+                    )
+            return tuple(by_section[section] for section in ("start", "middle", "end"))
         return tuple(beats)
+
+    @staticmethod
+    def _creative_brief(r: LexicalResult) -> CreativeBrief:
+        """Keep visual look and emotional direction as separate, evidenced axes."""
+        visual_treatments: list[str] = []
+        evidence: list[str] = []
+        dark_cues = r.evidence.get(L.COLOR, {}).get(ColorGrade.DARK.value, ())
+        if dark_cues:
+            visual_treatments.append("shadow_led_contrast")
+            evidence.extend(item.span or item.detail for item in dark_cues if item.span or item.detail)
+
+        requested_tones = []
+        tone_candidates = (
+            Emotion.MOTIVATIONAL, Emotion.UPLIFTING, Emotion.JOYFUL, Emotion.INSPIRING,
+            Emotion.EMOTIONAL, Emotion.INTENSE, Emotion.DRAMATIC, Emotion.CALM,
+            Emotion.ENERGETIC, Emotion.AGGRESSIVE, Emotion.ROMANTIC, Emotion.NOSTALGIC,
+        )
+        for tone in tone_candidates:
+            if r.scores.get(L.EMOTION, {}).get(tone.value, 0) > 0:
+                requested_tones.append(tone)
+                evidence.extend(
+                    item.span or item.detail
+                    for item in r.evidence.get(L.EMOTION, {}).get(tone.value, ())
+                    if item.span or item.detail
+                )
+
+        energy_trajectory = "rising" if (
+            Emotion.MOTIVATIONAL in requested_tones
+            and any(tone in requested_tones for tone in (Emotion.UPLIFTING, Emotion.JOYFUL, Emotion.INSPIRING))
+        ) else None
+        visual_decision, _ = LexicalIntentExtractor.decide(r, L.COLOR, ColorGrade)
+        emotion_decision, _ = LexicalIntentExtractor.decide(r, L.EMOTION, Emotion)
+        return CreativeBrief(
+            visual_treatments=tuple(dict.fromkeys(visual_treatments)),
+            emotional_tones=tuple(requested_tones),
+            energy_trajectory=energy_trajectory,
+            evidence=tuple(dict.fromkeys(evidence)),
+            visual_confidence=visual_decision.confidence if visual_decision else 0.0,
+            emotion_confidence=emotion_decision.confidence if emotion_decision else 0.0,
+        )
 
     @staticmethod
     def _conflicts(r: LexicalResult, fields: dict[str, Explained | None]) -> list[Conflict]:

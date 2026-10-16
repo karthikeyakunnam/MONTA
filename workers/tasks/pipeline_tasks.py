@@ -178,6 +178,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                         and previous_success.target_platform_snapshot == target_platform
                         and float((previous_success.edit_options_snapshot or {}).get("target_duration_s") or 0)
                         == float(edit_options.get("target_duration_s") or 0)
+                        and (previous_success.edit_options_snapshot or {}).get("pace")
+                        == edit_options.get("pace")
                     )
                     story_data = previous_success.result.get("story_plan_snapshot")
                     if same_story_inputs and story_data and cache_reused:
@@ -336,6 +338,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 # --- Layer 8, 9 & 10: Timeline Building & Audio Studio ---
                 publish(Stage.TIMELINE_BUILDING, "Generating timeline and compiling execution plan")
                 style_override = _style_override(edit_options)
+                selected_music = _resolved_music_style(result.context_pack, style_override)
                 base_timeline = pipeline.generate_timeline_ir(result.story, result.context_pack,
                                                               style_override=style_override)
 
@@ -344,7 +347,6 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 try:
                     publish(Stage.TIMELINE_BUILDING, "Composing background score and audio mixing")
                     if edit_options.get("add_music", True):
-                        selected_music = edit_options.get("music_style")
                         audio_tracks = await pipeline.build_soundtrack(
                             base_timeline, result.context_pack,
                             style=selected_music,
@@ -412,7 +414,6 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             )
                             revised_audio = ()
                             if edit_options.get("add_music", True):
-                                selected_music = edit_options.get("music_style")
                                 revised_audio = await pipeline.build_soundtrack(
                                     revised_base, result.context_pack,
                                     style=selected_music,
@@ -453,8 +454,12 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 timeline_row = existing_timeline or Timeline(id=f"timeline_{job_id}", project_id=project_id)
                 timeline_row.story_acts = {"assignments": active_story.act_assignments, "hero_clip_id": active_story.hero_clip_id}
                 timeline_row.style_config = {
+                    "job_id": job_id,
+                    "prompt_version": job.prompt_version if job is not None else project.prompt_version,
+                    "edit_options": dict(edit_options),
                     "pace": active_story.pace.value.value,
                     "emotion": active_story.emotion.value.value,
+                    "creative_brief": result.context_pack.intent.creative_brief.model_dump(mode="json"),
                     "timeline_validation": {"is_valid": True, "errors": [], "warnings": []},
                     "critic_evaluation": critic_verdict,
                 }
@@ -504,6 +509,11 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     inferred_caption = result.context_pack.intent.caption_style
                     caption_style = inferred_caption.value.value if inferred_caption and inferred_caption.value else "None"
                 if caption_style and caption_style != "None":
+                    timeline_row.style_config = {
+                        **(timeline_row.style_config or {}),
+                        "caption_state": "requested",
+                    }
+                    await db.commit()
                     publish(Stage.RENDERING, "Transcribing speech and burning captions with local Whisper")
                     try:
                         from services.edit_executor.caption_engine import CaptionEngine
@@ -515,6 +525,14 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             temp_dir=str(render_dir),
                         )
                         captions = await caption_engine.transcribe(str(render_file))
+                        timeline_row.style_config = {
+                            **(timeline_row.style_config or {}),
+                            "caption_segments": [
+                                {"start": segment["start"], "end": segment["end"], "text": segment["text"]}
+                                for segment in captions
+                            ],
+                            "caption_state": "transcribed" if captions else "no_speech_detected",
+                        }
                         if captions:
                             caption_file = render_dir / f"captioned_{job_id}.mp4"
                             await caption_engine.burn_captions(
@@ -532,6 +550,12 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             render_file = caption_file
                             render_result = caption_validation
                     except Exception as caption_error:
+                        timeline_row.style_config = {
+                            **(timeline_row.style_config or {}),
+                            "caption_state": "failed",
+                            "caption_error": str(caption_error)[:500],
+                        }
+                        await db.commit()
                         raise RuntimeError(
                             "Captions were requested but local transcription or caption rendering failed. "
                             f"Check the Whisper installation/model ({settings.WHISPER_MODEL_SIZE}): {caption_error}"
@@ -787,7 +811,27 @@ def _style_override(options: dict) -> dict:
         override["music"] = options["music_style"]
     if options.get("aspect_ratio"):
         override["aspect_ratio"] = options["aspect_ratio"]
+    if options.get("style_preset"):
+        override["style_preset"] = options["style_preset"]
+    if options.get("pace"):
+        override["pace"] = options["pace"]
+    if options.get("transition"):
+        override["transitions"] = options["transition"]
+    if options.get("transition_duration_ms") is not None:
+        override["transition_ms"] = options["transition_duration_ms"]
+    if options.get("scale_mode"):
+        override["scale_mode"] = options["scale_mode"]
+    for field in ("brightness", "contrast", "saturation", "gamma", "shadow_coolness", "highlight_warmth", "vignette"):
+        if options.get(field) is not None:
+            override[field] = options[field]
     return override
+
+
+def _resolved_music_style(context_pack, style_override: dict) -> str | None:
+    """Resolve the same preset and explicit overrides for soundtrack generation as video style."""
+    from services.style_engine.mapper import StyleMapper
+
+    return StyleMapper.resolve_style_for_pack(context_pack, style_override).get("music")
 
 
 async def _mark_failed(project_id: str, job_id: str, message: str, trace_id: str | None) -> None:

@@ -313,7 +313,7 @@ test.describe('MONTA Video Creation Workflow', () => {
     await page.goto(`/projects/${projectId}`);
 
     // Verify clip is listed in ClipTable
-    await expect(page.locator('text=beach_surf.mp4')).toBeVisible();
+    await expect(page.getByRole('table').getByText('beach_surf.mp4', { exact: true })).toBeVisible();
 
     // Start processing
     const runBtn = page.locator('button:has-text("Start processing")');
@@ -526,5 +526,89 @@ test.describe('MONTA Video Creation Workflow', () => {
     // Retry uses this failed job's saved inputs and the existing uploaded clips.
     const retryBtn = failureBanner.locator('button:has-text("Retry this revision")');
     await expect(retryBtn).toBeVisible();
+  });
+
+  test('7. Persists advanced creative controls in a same-project revision form', async ({ page }) => {
+    const projectId = 'proj_studio_controls_01';
+    page.on('requestfailed', (request) => console.log('request failed:', request.url(), request.failure()?.errorText));
+    const baseOptions = {
+      target_duration_s: 12, color_grade: 'dark', caption_style: 'None', music_style: null,
+      add_music: false, aspect_ratio: '9:16', style_preset: null, pace: null, transition: null,
+      transition_duration_ms: null, scale_mode: null, brightness: null, contrast: null, saturation: null,
+      gamma: null, shadow_coolness: null, highlight_warmth: null, vignette: null,
+    };
+    let savedOptions = baseOptions;
+    const submitted: { value: { prompt?: string; edit_options?: typeof baseOptions } | null } = { value: null };
+    let prompt = 'A shadowy motivational reel';
+    let promptVersion = 1;
+    const projectDetail = () => ({
+      id: projectId, title: 'Studio controls', description: null, status: 'complete', status_detail: null,
+      raw_prompt: prompt, target_platform: 'instagram', edit_options: savedOptions, prompt_version: promptVersion,
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(), clip_count: 1,
+      clips: [{
+        id: 'clip_studio_1', status: 'analyzed', filename: 'clip.mp4', original_filename: 'clip.mp4',
+        format: 'mp4', duration: 8, fps: 30, resolution: '1080x1920', resolution_class: '1080p',
+        video_codec: 'h264', bitrate: 1000000, file_size_bytes: 1000000, has_audio: true,
+        audio_streams: [], sha256: 'fixture', duplicate_of: null, rejection_issues: null, created_at: null,
+        preview_url: null,
+      }],
+      jobs: [], quota: [], total_duration_s: 8, story_pattern: null, story_duration_s: null,
+      story_cuts: null, story_score: null, render_status: null, render_url: null,
+      render_resolution: null, render_duration_s: null, render_size_bytes: null, renders: [],
+    });
+    await page.route(`**/api/v1/projects/${projectId}`, async (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(projectDetail()) }));
+    await page.route(`**/api/v1/projects/${projectId}/events`, async (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '[]' }));
+    await page.route(`**/api/v1/timeline/${projectId}`, async (route) =>
+      route.fulfill({ status: 404, contentType: 'application/json', body: JSON.stringify({ detail: 'No generated timeline' }) }));
+    await page.route('**/api/v1/upload/limits', async (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        allowed_extensions: ['.mp4'], max_file_bytes: 500000000, max_request_bytes: 1000000000,
+        max_files_per_request: 20, max_clip_seconds: 600, min_clip_seconds: 1, resolution_classes: [],
+      }) }));
+    await page.route(`**/api/v1/projects/${projectId}/revisions`, async (route) => {
+      const revision = JSON.parse(route.request().postData() || '{}') as typeof submitted.value;
+      submitted.value = revision;
+      prompt = revision?.prompt ?? prompt;
+      savedOptions = revision?.edit_options ?? savedOptions;
+      promptVersion += 1;
+      await route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({
+        tracking_id: 'job_studio_revision', job_id: 'job_studio_revision', task_id: 'task_studio_revision',
+        state: 'queued', project_status: 'queued',
+      }) });
+    });
+
+    await page.goto(`/projects/${projectId}`);
+    await page.getByRole('button', { name: 'Revise edit' }).click();
+    const form = page.locator('form.edit-options');
+    await form.locator('details.advanced-controls > summary').click();
+    await form.getByLabel('Editing prompt').fill('A shadowy motivational reel with a hopeful ending');
+    await form.getByLabel('Style preset').selectOption('trailer');
+    await form.getByLabel('Cut pace').selectOption('fast');
+    await form.getByRole('combobox', { name: 'Transition', exact: true }).selectOption('crossfade');
+    await form.getByLabel('Transition duration · milliseconds').fill('325');
+    await form.getByLabel('Composition').selectOption('fill');
+    const coolShadows = form.getByRole('slider', { name: 'Cool shadows' });
+    for (let step = 0; step < 30; step += 1) await coolShadows.press('ArrowRight');
+    const warmHighlights = form.getByRole('slider', { name: 'Warm highlights' });
+    for (let step = 0; step < 40; step += 1) await warmHighlights.press('ArrowRight');
+    await form.getByRole('button', { name: 'Create new version' }).click();
+    await expect.poll(() => submitted.value).not.toBeNull();
+    expect(submitted.value?.edit_options).toMatchObject({
+      style_preset: 'trailer', pace: 'fast', transition: 'crossfade', transition_duration_ms: 325,
+      scale_mode: 'fill', shadow_coolness: 0.3, highlight_warmth: 0.4,
+    });
+    expect(await page.getByRole('heading', { name: 'Studio controls' }).isVisible()).toBe(true);
+
+    await page.getByRole('button', { name: 'Revise edit' }).click();
+    const reopened = page.locator('form.edit-options');
+    await reopened.locator('details.advanced-controls > summary').click();
+    await expect(reopened.getByLabel('Style preset')).toHaveValue('trailer');
+    await expect(reopened.getByLabel('Cut pace')).toHaveValue('fast');
+    await expect(reopened.getByRole('combobox', { name: 'Transition', exact: true })).toHaveValue('crossfade');
+    await expect(reopened.getByLabel('Composition')).toHaveValue('fill');
+    await expect(reopened.getByRole('slider', { name: 'Cool shadows' })).toHaveValue('0.3');
+    await expect(reopened.getByRole('slider', { name: 'Warm highlights' })).toHaveValue('0.4');
   });
 });
