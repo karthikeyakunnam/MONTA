@@ -3,6 +3,8 @@ Tests for deterministic FFmpegCompiler.
 """
 
 from pathlib import Path
+from PIL import Image
+
 from services.edit_executor.compiler import FFmpegCompiler
 from shared.contracts.timeline import (
     AspectRatio,
@@ -87,3 +89,31 @@ def test_compiler_trims_streams_to_transition_aware_duration_and_fills_detected_
     assert "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920" in command.filter_graph
     assert "trim=duration=5.7500" in command.filter_graph
     assert "atrim=duration=5.7500" in command.filter_graph
+
+
+def test_compiler_burns_prompt_overlay_only_during_its_resolved_window(tmp_path: Path):
+    overlay_path = tmp_path / "title.png"
+    Image.new("RGBA", (1080, 1920), (0, 0, 0, 0)).save(overlay_path)
+    segment = TimelineSegmentIR(
+        segment_id="opening", clip_id="clip", source_path="/media/clip.mp4",
+        source_in_ms=0, source_out_ms=3000, timeline_start_ms=0, timeline_end_ms=3000,
+    )
+    timeline = TimelineIR(
+        project_id="title-overlay", width=1080, height=1920,
+        video_segments=(segment,), total_duration_ms=3000,
+        grain_strength=2,
+        text_overlays=({
+            "overlay_id": "title-1", "role": "title", "text": "PERSPECTIVES",
+            "source_span": '"PERSPECTIVES"',
+            "asset_path": str(overlay_path), "start_ms": 0, "end_ms": 2500,
+            "position": "center", "color": "magenta", "font_family": "serif",
+            "glow": True, "timing_source": "prompt",
+        },),
+    )
+
+    command = FFmpegCompiler().compile(timeline, tmp_path / "title.mp4", force_cpu=True)
+
+    assert str(overlay_path) in command.input_files
+    assert "-loop" in command.argv
+    assert "noise=alls=2:allf=t+u:all_seed=17" in command.filter_graph
+    assert "overlay=x=0:y=0:eof_action=pass:enable='between(t,0.0000,2.5000)'" in command.filter_graph

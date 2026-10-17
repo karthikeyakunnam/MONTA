@@ -67,6 +67,18 @@ class FFmpegCompiler:
                 input_index_map[audio.source_path] = len(unique_inputs)
                 unique_inputs.append(audio.source_path)
 
+        overlay_inputs: set[str] = set()
+        output_dir = Path(out_path).parent
+        for overlay in timeline.text_overlays:
+            asset_path = Path(overlay.asset_path).resolve(strict=True)
+            if not asset_path.is_file() or asset_path.parent != output_dir:
+                raise ValueError("text overlay assets must be files in the output directory")
+            input_path = str(asset_path)
+            overlay_inputs.add(input_path)
+            if input_path not in input_index_map:
+                input_index_map[input_path] = len(unique_inputs)
+                unique_inputs.append(input_path)
+
         # Build filtergraph
         filters: list[str] = []
         video_nodes: list[str] = []
@@ -294,6 +306,34 @@ class FFmpegCompiler:
             filters.append(f"{all_a_nodes}amix=inputs={1 + len(ext_audio_nodes)}:duration=first:dropout_transition=0[a_mixed]")
             final_out_a = "a_mixed"
 
+        for index, overlay in enumerate(timeline.text_overlays):
+            input_index = input_index_map[str(Path(overlay.asset_path).resolve())]
+            start_s = overlay.start_ms / 1000.0
+            end_s = overlay.end_ms / 1000.0
+            duration_s = end_s - start_s
+            fade_s = min(0.35, duration_s / 2)
+            asset_node = f"text_asset_{index}"
+            video_node = f"v_text_{index}"
+            filters.append(
+                f"[{input_index}:v]trim=duration={duration_s:.4f},"
+                f"setpts=PTS-STARTPTS+{start_s:.4f}/TB,format=rgba,"
+                f"fade=t=in:st={start_s:.4f}:d={fade_s:.4f}:alpha=1,"
+                f"fade=t=out:st={max(start_s, end_s - fade_s):.4f}:d={fade_s:.4f}:alpha=1"
+                f"[{asset_node}]"
+            )
+            filters.append(
+                f"[{final_out_v}][{asset_node}]overlay=x=0:y=0:eof_action=pass:"
+                f"enable='between(t,{start_s:.4f},{end_s:.4f})'[{video_node}]"
+            )
+            final_out_v = video_node
+
+        if timeline.grain_strength:
+            filters.append(
+                f"[{final_out_v}]noise=alls={timeline.grain_strength}:allf=t+u:"
+                f"all_seed={timeline.grain_seed}[v_grain]"
+            )
+            final_out_v = "v_grain"
+
         effective_duration = timeline.render_duration_s
         # Transition filters shorten the video by their overlap. Align both final
         # streams to that encoded duration; apad only supplies silence when source
@@ -314,7 +354,10 @@ class FFmpegCompiler:
         argv = [self.ffmpeg_bin, "-y", "-v", "error", "-nostdin", "-protocol_whitelist", "file,pipe"]
 
         for inp in unique_inputs:
-            argv.extend(["-i", inp])
+            if inp in overlay_inputs:
+                argv.extend(["-loop", "1", "-framerate", f"{fps:.4f}", "-i", inp])
+            else:
+                argv.extend(["-i", inp])
 
         argv.extend([
             "-filter_complex", full_filtergraph,

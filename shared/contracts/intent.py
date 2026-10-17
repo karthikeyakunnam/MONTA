@@ -6,7 +6,7 @@ Structured, explainable interpretation of a free-form creator request.
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.arbitration import ArbitrationSummary
 from shared.contracts.base import NonEmptyText, Text
@@ -48,6 +48,31 @@ class ArcBeat(BaseModel):
     reasoning: NonEmptyText
 
 
+class TextOverlayRequirement(BaseModel):
+    """Prompt-quoted text with only the placement and timing the creator specified."""
+
+    model_config = ConfigDict(frozen=True)
+
+    role: Literal["title", "subtitle", "credit", "caption"]
+    text: NonEmptyText
+    source_span: NonEmptyText
+    position: Literal["center", "below_title", "top", "lower_third", "bottom"] | None = None
+    color: Literal["white", "magenta"] | None = None
+    font_family: Literal["serif", "sans_serif"] | None = None
+    wide_tracking: bool | None = None
+    glow: bool | None = None
+    bold: bool | None = None
+    background: Literal["dark_card"] | None = None
+    start_s: float | None = Field(None, ge=0)
+    end_s: float | None = Field(None, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_timing(self):
+        if self.start_s is not None and self.end_s is not None and self.end_s <= self.start_s:
+            raise ValueError("text overlay end_s must be after start_s")
+        return self
+
+
 class CreativeBrief(BaseModel):
     """Keep visual treatment, emotional goals, and energy direction as separate axes."""
 
@@ -56,6 +81,7 @@ class CreativeBrief(BaseModel):
     visual_treatments: tuple[str, ...] = ()
     emotional_tones: tuple[Emotion, ...] = ()
     energy_trajectory: Literal["rising", "steady", "falling"] | None = None
+    text_overlays: tuple[TextOverlayRequirement, ...] = ()
     evidence: tuple[str, ...] = ()
     visual_confidence: float = Field(0.0, ge=0.0, le=1.0)
     emotion_confidence: float = Field(0.0, ge=0.0, le=1.0)

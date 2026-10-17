@@ -73,6 +73,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
     from orchestration.pipeline import build_pipeline
     from shared.contracts.clip import ClipSource
     from shared.contracts.context import ContextPack
+    from shared.contracts.base import revalidate
     from shared.contracts.intent import IntentAnalysis
     from shared.contracts.story import StoryPlan
     from services.prompt_engine.engine import is_incremental_revision
@@ -339,8 +340,10 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 publish(Stage.TIMELINE_BUILDING, "Generating timeline and compiling execution plan")
                 style_override = _style_override(edit_options)
                 selected_music = _resolved_music_style(result.context_pack, style_override)
+                segment_crops = await pipeline.detect_segment_crops(result.story, result.context_pack)
                 base_timeline = pipeline.generate_timeline_ir(result.story, result.context_pack,
-                                                              style_override=style_override)
+                                                              style_override=style_override,
+                                                              segment_crops=segment_crops)
 
                 # Compose audio soundtrack with speech-aware ducking and hero accents
                 audio_tracks = ()
@@ -409,8 +412,12 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             )
                             if revised_story.story_pattern:
                                 attempted_patterns.append(revised_story.story_pattern)
+                            revised_crops = await pipeline.detect_segment_crops(
+                                revised_story, result.context_pack,
+                            )
                             revised_base = pipeline.generate_timeline_ir(
                                 revised_story, result.context_pack, style_override=style_override,
+                                segment_crops=revised_crops,
                             )
                             revised_audio = ()
                             if edit_options.get("add_music", True):
@@ -423,6 +430,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                                 result.context_pack,
                                 style_override=style_override,
                                 audio_segments=revised_audio if revised_audio else None,
+                                segment_crops=revised_crops,
                             )
                             new_verdict = await pipeline.evaluate_timeline(revised_timeline, revised_story, result.context_pack)
                             new_score = float(new_verdict.get("overall_score", 0.0))
@@ -448,6 +456,20 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 except Exception as critic_err:
                     logger.warning("Critic evaluation skipped: %s", critic_err)
 
+                render_dir = settings.storage_root_path / "renders" / project_id
+                render_dir.mkdir(parents=True, exist_ok=True)
+                overlays, grain_strength, unavailable_effects = _materialize_prompt_visuals(
+                    result.context_pack.intent.creative_brief,
+                    timeline_ir.total_duration_ms,
+                    render_dir,
+                    job_id,
+                )
+                timeline_ir = revalidate(
+                    timeline_ir,
+                    text_overlays=overlays,
+                    grain_strength=grain_strength,
+                )
+
                 existing_timeline = (await db.execute(
                     select(Timeline).where(Timeline.project_id == project_id)
                 )).scalar_one_or_none()
@@ -460,6 +482,9 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     "pace": active_story.pace.value.value,
                     "emotion": active_story.emotion.value.value,
                     "creative_brief": result.context_pack.intent.creative_brief.model_dump(mode="json"),
+                    "rendered_text_overlays": [overlay.model_dump(mode="json") for overlay in overlays],
+                    "grain_strength": grain_strength,
+                    "unsupported_effects": unavailable_effects,
                     "timeline_validation": {"is_valid": True, "errors": [], "warnings": []},
                     "critic_evaluation": critic_verdict,
                 }
@@ -481,8 +506,6 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 persistence.save(checkpoint)
                 publish(Stage.RENDERING, "Rendering final media output with FFmpeg")
                 
-                render_dir = settings.storage_root_path / "renders" / project_id
-                render_dir.mkdir(parents=True, exist_ok=True)
                 render_file = render_dir / f"final_{job_id}.mp4"
 
                 def on_render_progress(pct: float, elapsed: float, stage_name: str):
@@ -832,6 +855,73 @@ def _resolved_music_style(context_pack, style_override: dict) -> str | None:
     from services.style_engine.mapper import StyleMapper
 
     return StyleMapper.resolve_style_for_pack(context_pack, style_override).get("music")
+
+
+def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str):
+    """Rasterize exact prompt text and return compiler-ready overlays plus honest effect status."""
+    from services.edit_executor.text_overlay import render_text_overlay_asset
+    from shared.contracts.timeline import TextOverlayIR
+
+    requirements = brief.text_overlays
+    credits = [item for item in requirements if item.role == "credit"]
+    credit_duration = min(2500, max(1000, duration_ms // max(2, len(credits) + 1))) if credits else 0
+    overlays = []
+
+    for index, requirement in enumerate(requirements):
+        if requirement.role == "title":
+            default_start, default_end = 0, min(duration_ms, 4500)
+        elif requirement.role == "subtitle":
+            default_start, default_end = min(350, max(0, duration_ms - 1)), min(duration_ms, 4500)
+        elif requirement.role == "credit":
+            credit_index = credits.index(requirement)
+            default_start = max(0, duration_ms - (len(credits) - credit_index) * credit_duration)
+            default_end = min(duration_ms, default_start + credit_duration)
+        else:
+            default_start = min(round(duration_ms * 0.42), max(0, duration_ms - 1))
+            default_end = min(duration_ms, default_start + min(2500, duration_ms))
+
+        start_ms = round(requirement.start_s * 1000) if requirement.start_s is not None else default_start
+        end_ms = round(requirement.end_s * 1000) if requirement.end_s is not None else default_end
+        if start_ms >= duration_ms:
+            continue
+        end_ms = min(duration_ms, end_ms)
+        if end_ms <= start_ms:
+            continue
+
+        overlay_id = f"text-{index:02d}-{requirement.role}"
+        asset_path = render_dir / f"overlay_{job_id}_{index:02d}.png"
+        render_text_overlay_asset(requirement, 1080, 1920, asset_path)
+        overlays.append(TextOverlayIR(
+            overlay_id=overlay_id,
+            role=requirement.role,
+            text=requirement.text,
+            source_span=requirement.source_span,
+            asset_path=str(asset_path),
+            start_ms=start_ms,
+            end_ms=end_ms,
+            position=requirement.position or {
+                "title": "center", "subtitle": "below_title", "credit": "lower_third", "caption": "lower_third",
+            }[requirement.role],
+            color=requirement.color or ("magenta" if requirement.role == "title" else "white"),
+            font_family=requirement.font_family or ("serif" if requirement.role == "title" else "sans_serif"),
+            glow=requirement.glow is True,
+            timing_source="prompt" if requirement.start_s is not None or requirement.end_s is not None
+            else "presentation_default",
+        ))
+
+    unsupported_reasons = {
+        "dust_particles": "No particle compositing generator is available in the local render pipeline.",
+        "atmospheric_haze": "No volumetric fog/haze synthesis is available in the local render pipeline.",
+        "rim_lighting": "The current color balance is global; masked subject relighting is unavailable.",
+        "camera_motion": "Source motion is preserved; virtual pan/zoom generation is unavailable.",
+    }
+    unavailable = [
+        {"effect": effect, "status": "unavailable", "reason": reason, "evidence": list(brief.evidence)}
+        for effect, reason in unsupported_reasons.items()
+        if effect in brief.visual_treatments
+    ]
+    grain_strength = 2 if "film_grain" in brief.visual_treatments else 0
+    return tuple(overlays), grain_strength, unavailable
 
 
 async def _mark_failed(project_id: str, job_id: str, message: str, trace_id: str | None) -> None:

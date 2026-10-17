@@ -36,6 +36,7 @@ class StoryToTimelineTranslator:
         style_override: Optional[dict] = None,
         render_profile: Optional[RenderProfileIR] = None,
         audio_segments: Optional[Sequence[AudioSegmentIR]] = None,
+        segment_crops: dict[int, tuple[int, int, int, int]] | None = None,
     ) -> TimelineIR:
         """Deterministically builds TimelineIR from story plan decisions and source media."""
         # 1. Determine Aspect Ratio and Resolution from target platform
@@ -133,7 +134,7 @@ class StoryToTimelineTranslator:
                 source_path=source_path,
                 source_in_ms=source_in_ms,
                 source_out_ms=source_out_ms,
-                source_crop=metadata.content_crop,
+                source_crop=(segment_crops or {}).get(cut.index, metadata.content_crop),
                 timeline_start_ms=seg_start_ms,
                 timeline_end_ms=seg_end_ms,
                 speed=round(source_duration_ms / output_duration_ms, 4),

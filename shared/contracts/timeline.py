@@ -134,6 +134,31 @@ class RenderProfileIR(BaseModel):
     fallback_encoder: str = "libx264"
 
 
+class TextOverlayIR(BaseModel):
+    """A validated, already-rendered transparent text asset over a fixed timeline interval."""
+
+    model_config = ConfigDict(frozen=True)
+
+    overlay_id: str = Field(..., min_length=1)
+    role: Literal["title", "subtitle", "credit", "caption"]
+    text: str = Field(..., min_length=1, max_length=200)
+    source_span: str = Field(..., min_length=1, max_length=400)
+    asset_path: str = Field(..., min_length=1)
+    start_ms: TimeMs
+    end_ms: TimeMs
+    position: Literal["center", "below_title", "top", "lower_third", "bottom"]
+    color: Literal["white", "magenta"]
+    font_family: Literal["serif", "sans_serif"]
+    glow: bool = False
+    timing_source: Literal["prompt", "presentation_default"]
+
+    @model_validator(mode="after")
+    def _validate_interval(self):
+        if self.end_ms <= self.start_ms:
+            raise ValueError("text overlay end_ms must be after start_ms")
+        return self
+
+
 class TimelineIR(BaseModel):
     """Authoritative, complete edit timeline specification."""
 
@@ -148,6 +173,9 @@ class TimelineIR(BaseModel):
     scale_mode: ScaleMode = ScaleMode.FIT
     video_segments: tuple[VideoSegmentIR, ...] = Field(..., min_length=1)
     audio_segments: tuple[AudioSegmentIR, ...] = ()
+    text_overlays: tuple[TextOverlayIR, ...] = ()
+    grain_strength: int = Field(0, ge=0, le=100)
+    grain_seed: int = Field(17, ge=0, le=2_147_483_647)
     render_profile: RenderProfileIR = RenderProfileIR()
     total_duration_ms: TimeMs
 

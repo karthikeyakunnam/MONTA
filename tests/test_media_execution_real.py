@@ -64,6 +64,55 @@ async def test_probe_detects_stable_letterbox_without_treating_dark_scene_edges_
 
 
 @pytest.mark.asyncio
+async def test_per_shot_crop_detects_variable_matte_without_cropping_full_height_shot(tmp_path: Path):
+    changing = tmp_path / "changing_active_picture.mp4"
+    subprocess.check_call([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-f", "lavfi", "-i", "color=c=red:size=478x270:rate=24:duration=2",
+        "-f", "lavfi", "-i", "color=c=green:size=478x850:rate=24:duration=2",
+        "-f", "lavfi", "-i", "color=c=yellow:size=456x256:rate=24:duration=2",
+        "-filter_complex",
+        "[0:v]pad=478:850:0:290:black[first];[2:v]pad=478:850:11:297:black[last];"
+        "[first][1:v][last]concat=n=3:v=1:a=0[out]",
+        "-map", "[out]", "-c:v", "libx264", "-preset", "ultrafast",
+        "-pix_fmt", "yuv420p", str(changing),
+    ])
+    backend = FFmpegMediaBackend(timeout_s=30, allowed_roots=(str(tmp_path),))
+    metadata = await backend.probe(ClipSource(clip_id="changing", path=str(changing)))
+
+    assert metadata.content_crop is None
+    first = await backend.detect_content_crop_for_window(metadata, 0.1, 1.9)
+    portrait = await backend.detect_content_crop_for_window(metadata, 2.1, 3.9)
+    last = await backend.detect_content_crop_for_window(metadata, 4.1, 5.9)
+
+    assert first is not None and first[1] < metadata.height * 0.5
+    assert portrait is None
+    assert last is not None and last[1] < metadata.height * 0.5
+
+
+def test_prompt_title_overlay_asset_renders_requested_magenta_serif_text(tmp_path: Path):
+    from PIL import Image
+
+    from services.edit_executor.text_overlay import render_text_overlay_asset
+    from shared.contracts.intent import TextOverlayRequirement
+
+    requirement = TextOverlayRequirement(
+        role="title", text="PERSPECTIVES", source_span='"PERSPECTIVES"',
+        position="center", color="magenta", font_family="serif", glow=True,
+        bold=True, background="dark_card",
+    )
+    path = render_text_overlay_asset(requirement, 1080, 1920, tmp_path / "title.png")
+
+    with Image.open(path) as overlay:
+        assert overlay.mode == "RGBA"
+        assert overlay.size == (1080, 1920)
+        alpha = overlay.getchannel("A")
+        assert alpha.getbbox() is not None
+        magenta = [pixel for pixel in overlay.getdata() if pixel[0] > 140 and pixel[2] > 90 and pixel[0] > pixel[1] * 1.3]
+        assert magenta
+
+
+@pytest.mark.asyncio
 async def test_probe_marks_no_crop_as_analyzed(tmp_path: Path):
     portrait = tmp_path / "full_portrait.mp4"
     subprocess.check_call([

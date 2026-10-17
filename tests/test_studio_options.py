@@ -4,7 +4,8 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app.schemas.project import EditOptions
-from workers.tasks.pipeline_tasks import _style_override
+from services.prompt_engine.lexical_extractor import LexicalIntentExtractor
+from workers.tasks.pipeline_tasks import _materialize_prompt_visuals, _style_override
 
 
 def test_studio_revision_options_are_validated_and_json_persistable():
@@ -49,3 +50,23 @@ def test_studio_revision_options_are_validated_and_json_persistable():
 def test_unsupported_or_out_of_range_controls_are_rejected(payload):
     with pytest.raises(ValidationError):
         EditOptions.model_validate(payload)
+
+
+def test_prompt_visuals_materialize_exact_text_and_report_unsupported_effects(tmp_path):
+    brief = LexicalIntentExtractor().extract(
+        'Centered serif title "PERSPECTIVES". White caption overlay "PURE AS BIRTH". '
+        'Subtle film grain, floating dust particles, and atmospheric haze.'
+    ).creative_brief
+
+    overlays, grain_strength, unavailable = _materialize_prompt_visuals(
+        brief, 20_000, tmp_path, "job_prompt_visuals",
+    )
+
+    assert [(item.role, item.text) for item in overlays] == [
+        ("title", "PERSPECTIVES"), ("caption", "PURE AS BIRTH"),
+    ]
+    assert all(item.timing_source == "presentation_default" for item in overlays)
+    assert all(tmp_path in __import__("pathlib").Path(item.asset_path).parents for item in overlays)
+    assert all(__import__("pathlib").Path(item.asset_path).is_file() for item in overlays)
+    assert grain_strength == 2
+    assert {item["effect"] for item in unavailable} == {"dust_particles", "atmospheric_haze"}

@@ -55,6 +55,9 @@ class MediaToolError(MontaError):
 
 class MediaBackend(Protocol):
     async def probe(self, source: ClipSource) -> TechnicalMetadata: ...
+    async def detect_content_crop_for_window(
+        self, meta: TechnicalMetadata, start_s: float, end_s: float,
+    ) -> tuple[int, int, int, int] | None: ...
     async def sample_luma(self, meta: TechnicalMetadata, *, max_frames: int, width: int) -> tuple[np.ndarray, float]: ...
     async def keyframes(self, meta: TechnicalMetadata, times_s: list[float], *, width: int) -> list[ImagePart]: ...
 
@@ -256,6 +259,53 @@ class FFmpegMediaBackend:
         if (meta.height - (y + height)) / meta.height < 0.08:
             return None
         return crop
+
+    async def detect_content_crop_for_window(
+        self, meta: TechnicalMetadata, start_s: float, end_s: float,
+    ) -> tuple[int, int, int, int] | None:
+        """Detect a stable vertical matte only within one selected source shot."""
+        if (meta.rotation != 0 or meta.width >= meta.height or start_s < 0
+                or end_s <= start_s or end_s > meta.duration_s):
+            return None
+        path = check_input_path(meta.path, self.allowed_roots)
+        samples = [start_s + (end_s - start_s) * part for part in (0.2, 0.5, 0.8)]
+        found: list[tuple[int, int, int, int]] = []
+        for at in samples:
+            cmd = [self.ffmpeg, "-hide_banner", "-v", "info", "-nostdin", *PROTOCOL_ARGS,
+                   "-ss", f"{at:.3f}", "-i", str(path), "-frames:v", "3",
+                   "-vf", "cropdetect=limit=0.10:round=2:reset=0", "-f", "null", "-"]
+            try:
+                _, stderr = await self._run_output(cmd)
+            except MediaToolError:
+                continue
+            matches = re.findall(rb"crop=(\d+):(\d+):(\d+):(\d+)", stderr)
+            if matches:
+                found.append(tuple(map(int, matches[-1])))
+
+        width_tolerance = max(2, round(meta.height * 0.02))
+        for _, height, _, y in found:
+            if not (0 < height < meta.height * 0.88):
+                continue
+            group = [
+                crop for crop in found
+                if crop[0] / meta.width >= 0.90
+                and abs(crop[1] - height) <= width_tolerance
+                and abs(crop[3] - y) <= width_tolerance
+            ]
+            if len(group) < 2:
+                continue
+            top = max(crop[3] for crop in group)
+            bottom = min(crop[3] + crop[1] for crop in group)
+            active_height = bottom - top
+            if active_height <= 0:
+                continue
+            area_ratio = active_height / meta.height
+            if area_ratio >= 0.88 or active_height / meta.height < 0.30:
+                continue
+            if top / meta.height < 0.08 or (meta.height - (top + active_height)) / meta.height < 0.08:
+                continue
+            return (meta.width, active_height, 0, top)
+        return None
 
     async def sample_luma(self, meta: TechnicalMetadata, *, max_frames: int = 240, width: int = 320) -> tuple[np.ndarray, float]:
         path = check_input_path(meta.path, self.allowed_roots)

@@ -32,6 +32,34 @@ def test_flagship_prompt():
     assert a.target_platform.is_default
 
 
+def test_quoted_title_subtitle_credits_and_caption_are_preserved_as_requirements():
+    prompt = (
+        'Main title in bold magenta capital serif text "PERSPECTIVES". '
+        "Centered neon glow title 'PERSPECTIVES'. "
+        'Clean white tracking sans-serif subtitle underneath "A Cinematic Experiment". '
+        'Credits: "CINEMATOGRAPHY BY ASHISH" and "SHOT ON SAMSUNG". '
+        'White caption overlay "PURE AS BIRTH".'
+    )
+
+    requirements = lex.extract(prompt).creative_brief.text_overlays
+
+    assert [(item.role, item.text) for item in requirements] == [
+        ("title", "PERSPECTIVES"),
+        ("subtitle", "A Cinematic Experiment"),
+        ("credit", "CINEMATOGRAPHY BY ASHISH"),
+        ("credit", "SHOT ON SAMSUNG"),
+        ("caption", "PURE AS BIRTH"),
+    ]
+    assert requirements[0].position == "center"
+    assert requirements[0].color == "magenta"
+    assert requirements[0].font_family == "serif"
+    assert requirements[0].glow is True
+    assert requirements[1].position == "below_title"
+    assert requirements[1].color == "white"
+    assert requirements[1].font_family == "sans_serif"
+    assert requirements[4].color == "white"
+
+
 def test_every_field_explains_itself():
     a = lex.extract(NIKE)
     for f in (a.genre, a.emotion, a.pace, a.target_platform, a.color_grade, a.caption_style):
@@ -155,14 +183,31 @@ def test_shadowy_happy_motivational_brief_keeps_visual_and_emotional_axes_separa
     assert intent.arc_for("end").pace == Pace.FAST
 
 
+def test_physical_effect_requests_are_explicitly_classified_from_prompt_evidence():
+    intent = lex.extract(
+        "Add subtle film grain, floating dust particles, atmospheric haze, rim lighting, and slow camera movements."
+    )
+
+    assert set(intent.creative_brief.visual_treatments) == {
+        "film_grain", "dust_particles", "atmospheric_haze", "rim_lighting", "camera_motion",
+    }
+    assert {"film grain", "dust particles", "atmospheric haze", "rim lighting", "slow camera movements"} <= set(
+        intent.creative_brief.evidence
+    )
+
+
 def test_targeted_happier_revision_preserves_shadowy_visual_treatment_and_motivation():
-    previous = lex.extract("A shadowy, happy, motivational reel with an uplifting resolution")
+    previous = lex.extract(
+        'A shadowy, happy, motivational reel with an uplifting resolution. '
+        'Centered magenta serif title "PERSPECTIVES".'
+    )
     revised = lex.extract("Make the ending happier")
     merged = IntentEngine.merge_revision(previous, revised)
     assert "shadow_led_contrast" in merged.creative_brief.visual_treatments
     assert Emotion.MOTIVATIONAL in merged.creative_brief.emotional_tones
     assert Emotion.UPLIFTING in merged.creative_brief.emotional_tones
     assert merged.creative_brief.energy_trajectory == "rising"
+    assert merged.creative_brief.text_overlays == previous.creative_brief.text_overlays
 
 
 def test_full_prompt_replacement_does_not_inherit_an_unrelated_prompt():
@@ -183,26 +228,40 @@ async def test_no_llm_is_marked_degraded():
     assert any("no text LLM" in d for d in a.degraded)
 
 
-async def test_llm_agreement_raises_confidence_and_fills_gaps():
+async def test_llm_grounded_agreement_raises_confidence():
+    prompt = f"{NIKE} for Instagram reels"
     llm = ScriptedProvider([_llm_json(
-        pace={"value": "aggressive", "confidence": 0.9, "reasoning": "'aggressive cuts'"},
-        target_platform={"value": "instagram", "confidence": 0.6, "reasoning": "'reel'-style ad"},
+        pace={"value": "aggressive", "confidence": 0.9, "reasoning": "'aggressive cuts'", "evidence_span": "aggressive cuts"},
+        target_platform={"value": "instagram", "confidence": 0.6, "reasoning": "'Instagram reels'", "evidence_span": "Instagram"},
     )], vision=False)
-    lexical = lex.extract(NIKE)
-    a = await IntentEngine(llm).analyze(NIKE)
+    lexical = lex.extract(prompt)
+    a = await IntentEngine(llm).analyze(prompt)
     assert a.pace.confidence > lexical.pace.confidence
     assert not a.target_platform.is_default
-    assert a.target_platform.confidence == pytest.approx(0.6 * 0.85)
+    assert a.target_platform.confidence > lexical.target_platform.confidence
     assert "target_platform" not in {m.field for m in a.missing}
     assert a.extractors[-1].startswith("llm:")
 
 
-async def test_llm_disagreement_records_ambiguity():
+async def test_llm_color_guess_without_prompt_evidence_is_discarded():
     llm = ScriptedProvider([_llm_json(color_grade={"value": "neon", "confidence": 0.95, "reasoning": "guess"})], vision=False)
     a = await IntentEngine(llm).analyze(NIKE)
-    assert a.color_grade.value == ColorGrade.NEON
-    assert a.color_grade.confidence < 0.95
-    assert any(x.field == "color_grade" for x in a.ambiguities)
+    assert a.color_grade.value == ColorGrade.DARK
+    assert not any(x.field == "color_grade" for x in a.ambiguities)
+    assert any("color_grade" in revision for revision in a.revisions)
+
+
+async def test_llm_pace_without_a_prompt_span_cannot_override_slow_camera_direction():
+    prompt = "A cinematic portrait with slow camera movements."
+    llm = ScriptedProvider([_llm_json(pace={
+        "value": "fast", "confidence": 0.99,
+        "reasoning": "fast edit", "evidence_span": "fast edit",
+    })], vision=False)
+
+    intent = await IntentEngine(llm).analyze(prompt)
+
+    assert intent.pace.value == Pace.SLOW
+    assert all(e.span != "fast edit" for e in intent.pace.evidence)
 
 
 async def test_llm_failure_falls_back_to_lexical():

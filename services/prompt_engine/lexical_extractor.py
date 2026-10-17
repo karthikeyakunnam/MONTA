@@ -21,7 +21,10 @@ from enum import StrEnum
 from services.prompt_engine import lexicon as L
 from services.prompt_engine.normalizer import BOUNDARY, NormalizedPrompt, normalize
 from shared.contracts.explain import Evidence, Explained, clamp
-from shared.contracts.intent import Ambiguity, ArcBeat, Conflict, CreativeBrief, IntentAnalysis, MissingInfo
+from shared.contracts.intent import (
+    Ambiguity, ArcBeat, Conflict, CreativeBrief, IntentAnalysis, MissingInfo,
+    TextOverlayRequirement,
+)
 from shared.contracts.vocab import CaptionStyle, ColorGrade, Emotion, Genre, MusicStyle, Pace, Platform
 from shared.text import inflection_bases
 
@@ -450,6 +453,20 @@ class LexicalIntentExtractor:
             visual_treatments.append("shadow_led_contrast")
             evidence.extend(item.span or item.detail for item in dark_cues if item.span or item.detail)
 
+        treatment_patterns = (
+            ("film_grain", r"\b(film\s+grain|grain)\b"),
+            ("dust_particles", r"\b(dust\s+particles?|dust\s+motes?)\b"),
+            ("atmospheric_haze", r"\b(atmospheric\s+haze|haze|fog|smoke)\b"),
+            ("rim_lighting", r"\b(rim\s+light(?:ing)?|spotlight)\b"),
+            ("camera_motion", r"\b(slow\s+)?(cinematic\s+)?camera\s+(pan|zoom|movement|motion)s?\b"),
+        )
+        prompt = r.normalized.raw
+        for treatment, pattern in treatment_patterns:
+            matches = list(re.finditer(pattern, prompt, flags=re.IGNORECASE))
+            if matches:
+                visual_treatments.append(treatment)
+                evidence.extend(match.group(0) for match in matches)
+
         requested_tones = []
         tone_candidates = (
             Emotion.MOTIVATIONAL, Emotion.UPLIFTING, Emotion.JOYFUL, Emotion.INSPIRING,
@@ -475,10 +492,74 @@ class LexicalIntentExtractor:
             visual_treatments=tuple(dict.fromkeys(visual_treatments)),
             emotional_tones=tuple(requested_tones),
             energy_trajectory=energy_trajectory,
+            text_overlays=LexicalIntentExtractor._text_overlay_requirements(r.normalized.raw),
             evidence=tuple(dict.fromkeys(evidence)),
             visual_confidence=visual_decision.confidence if visual_decision else 0.0,
             emotion_confidence=emotion_decision.confidence if emotion_decision else 0.0,
         )
+
+    @staticmethod
+    def _text_overlay_requirements(prompt: str) -> tuple[TextOverlayRequirement, ...]:
+        requirements: list[TextOverlayRequirement] = []
+        seen: dict[tuple[str, str], int] = {}
+        pattern = r'''"([^"\n]{1,200})"|'([^'\n]{1,200})'|\u201c([^\u201d\n]{1,200})\u201d'''
+        for match in re.finditer(pattern, prompt):
+            text = next(group for group in match.groups() if group is not None).strip()
+            sentence_start = max(prompt.rfind(mark, 0, match.start()) for mark in ".!?\n") + 1
+            context = prompt[sentence_start:match.start()].casefold()
+            classification = f"{context} {text.casefold()}"
+            if re.search(r"\b(cinematography by|shot on|credits?)\b", classification):
+                role = "credit"
+            elif re.search(r"\b(subtitle|subtitles)\b", context):
+                role = "subtitle"
+            elif re.search(r"\b(captions?|overlay text)\b", context):
+                role = "caption"
+            elif re.search(r"\b(main title|title)\b", context):
+                role = "title"
+            else:
+                continue
+
+            position = None
+            if role == "title" and re.search(r"\b(centered|center)\b", context):
+                position = "center"
+            elif role == "subtitle" and re.search(r"\b(underneath|below)\b", context):
+                position = "below_title"
+            color = "magenta" if re.search(r"\b(magenta|pink)\b", context) else (
+                "white" if re.search(r"\bwhite\b", context) else None
+            )
+            font_family = "sans_serif" if re.search(r"\b(sans[- ]serif|sans)\b", context) else (
+                "serif" if re.search(r"\bserif\b", context) else None
+            )
+            wide_tracking = True if re.search(r"\b(tracking|wide[- ]letter[- ]spacing)\b", context) else None
+            glow = True if re.search(r"\b(neon|glow|glowing)\b", context) else None
+            bold = True if re.search(r"\b(bold|heavy|strong)\b", context) else None
+            background = "dark_card" if re.search(r"\b(textured dark backdrop|dark backdrop|black background)\b", context) else None
+
+            key = (role, text)
+            previous_index = seen.get(key)
+            if previous_index is None:
+                seen[key] = len(requirements)
+                requirements.append(TextOverlayRequirement(
+                    role=role, text=text, source_span=match.group(0), position=position,
+                    color=color, font_family=font_family, wide_tracking=wide_tracking,
+                    glow=glow, bold=bold,
+                    background=background,
+                ))
+                continue
+
+            previous = requirements[previous_index]
+            spans = tuple(dict.fromkeys((previous.source_span, match.group(0))))
+            requirements[previous_index] = previous.model_copy(update={
+                "source_span": " | ".join(spans),
+                "position": previous.position or position,
+                "color": previous.color or color,
+                "font_family": previous.font_family or font_family,
+                "wide_tracking": previous.wide_tracking if previous.wide_tracking is not None else wide_tracking,
+                "glow": previous.glow if previous.glow is not None else glow,
+                "bold": previous.bold if previous.bold is not None else bold,
+                "background": previous.background or background,
+            })
+        return tuple(requirements)
 
     @staticmethod
     def _conflicts(r: LexicalResult, fields: dict[str, Explained | None]) -> list[Conflict]:

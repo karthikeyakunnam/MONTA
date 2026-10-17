@@ -160,6 +160,26 @@ class MontaPipeline:
         failures = [r for r in results if isinstance(r, ProbeFailure)]
         return metas, failures
 
+    async def detect_segment_crops(
+        self, story: StoryPlan, pack: ContextPack,
+    ) -> dict[int, tuple[int, int, int, int]]:
+        """Use source-window evidence so mixed full-frame/matted clips are not cropped globally."""
+        detector = getattr(self.media, "detect_content_crop_for_window", None)
+        if detector is None:
+            return {}
+        metadata = {item.clip_id: item for item in pack.video_metadata}
+        limit = asyncio.Semaphore(4)
+
+        async def detect(cut):
+            meta = metadata.get(cut.clip_id)
+            if meta is None or meta.content_crop is not None:
+                return cut.index, meta.content_crop if meta else None
+            async with limit:
+                return cut.index, await detector(meta, cut.source_in, cut.source_out)
+
+        results = await asyncio.gather(*(detect(cut) for cut in story.timeline))
+        return {index: crop for index, crop in results if crop is not None}
+
     async def compose(self, *, project_id: str, user_id: str, intent: IntentAnalysis, metadata: Sequence[TechnicalMetadata]) -> ContextPack:
         return await self.composer.compose(project_id=project_id, user_id=user_id, intent=intent, clips=metadata)
 
@@ -282,6 +302,7 @@ class MontaPipeline:
         pack: ContextPack,
         style_override: dict | None = None,
         audio_segments: Sequence[AudioSegmentIR] | None = None,
+        segment_crops: dict[int, tuple[int, int, int, int]] | None = None,
     ):
         """Translate a StoryPlan and reject invalid Timeline IR before rendering."""
         from services.timeline_generator.translator import StoryToTimelineTranslator
@@ -292,6 +313,7 @@ class MontaPipeline:
             pack=pack,
             style_override=style_override,
             audio_segments=audio_segments,
+            segment_crops=segment_crops,
         )
         source_durations_ms = {meta.clip_id: round(meta.duration_s * 1000) for meta in pack.video_metadata}
         validation = EditPlanValidator().validate(timeline, source_durations_ms=source_durations_ms)

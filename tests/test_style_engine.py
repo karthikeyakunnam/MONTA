@@ -215,6 +215,15 @@ def test_story_to_timeline_applies_style_engine_color_and_scale():
     assert timeline.video_segments[1].transition_in_ms == 300
 
 
+def test_story_to_timeline_applies_per_segment_crop_override():
+    timeline = StoryToTimelineTranslator.translate(
+        _make_story(), _sample_pack(), segment_crops={1: (1920, 1080, 0, 0)},
+    )
+
+    assert timeline.video_segments[0].source_crop is None
+    assert timeline.video_segments[1].source_crop == (1920, 1080, 0, 0)
+
+
 def test_studio_color_controls_compile_to_timeline_ir_and_ffmpeg_filters(tmp_path):
     pack = _sample_pack()
     story = _make_story()

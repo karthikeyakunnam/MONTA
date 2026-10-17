@@ -116,3 +116,30 @@
 - [!] Caption-style rendering remains blocked because Whisper `large-v3` weights are absent. Captions-off was verified; no weight download/inference was triggered.
 - [x] Fixed API serialization exposed by the full suite: unset optional studio fields now remain omitted, preserving the existing `EditOptions` round-trip contract. Full backend suite: `python3 -m pytest tests/ -q --tb=short -o log_level=WARNING` — 596 passed, 18 deselected, 0 failed.
 - [ ] Next quality gate: repeat this evidence pass with the user's real multi-shot footage and caption weights available before expanding the studio feature set.
+
+## Creative adherence + manual edit workflow (2026-10-17)
+
+### Step 0 — baseline
+- [x] `git status --short`, `git log -15 --oneline`, `git diff --stat`: HEAD `f3d6b2b`; only pre-existing untracked `storage/` data; no tracked diff. Do not clean or replace project media.
+- [x] Located project `proj_72f7f005f001` (“Ashish2.O”), version 1, five uploaded clips, saved plan, and two successful 22.5s renders. Requested alias `monta_edit_proj_72f7f005f001.mp4` is absent; inspect the persisted current render `storage/renders/proj_72f7f005f001/final_job_62fcab674404.mp4` instead.
+- [x] FFprobe baseline: H.264 1080x1920, 30fps; AAC 48kHz; video/audio both 22.500s. Prior project input `clip_b13bf63fcfa1` has 21.767s video but 25.924s audio.
+- [x] Played the stored MP4 through in Chromium; sampled 10 points across the 22.5s video and inspected opening/middle/late frames. Observed black opening, repeated direct-to-camera shots, persistent black surround on a landscape insert, and no requested title/credits/caption text.
+- [x] Focused baseline: `python3 -m pytest tests/test_prompt_engine.py tests/test_story.py tests/test_style_engine.py tests/test_timeline_ir.py tests/test_ffmpeg_compiler.py tests/test_media_execution_real.py tests/test_critic_system.py -q --tb=short -o log_level=WARNING` — 77 passed.
+
+### Part 1 — prompt adherence and render
+- [x] LLM intent fields now require a cited span that exists in the prompt; absent/ungrounded fields and pacing-arc beats are discarded and recorded in `IntentAnalysis.revisions`. Regression: unsupported `fast edit` cannot override “slow camera movements”; `tests/test_prompt_engine.py` — 28 passed.
+- [x] Added validated exact-text overlay requirements for quoted title, subtitle, credits, and captions with prompt span and explicit placement when present. Extraction test: `tests/test_prompt_engine.py::test_quoted_title_subtitle_credits_and_caption_are_preserved_as_requirements` — passed.
+- [x] Added source-window crop detection for selected cuts and wired per-segment crops into the existing Timeline IR. Dynamic-matte integration fixture and IR crop-override test each pass; real-project render verification pending.
+- [ ] Distinguish requirements, preferences, and optional effects in prompt interpretation; report unsupported effects explicitly.
+- [ ] Correct prompt-to-story/shot selection, repeated-shot and black-space behavior using actual clip analysis; do not fabricate unavailable scenes.
+- [ ] Add title/subtitle/credit/caption treatments through validated Timeline IR and deterministic compiler/render path; report unsupported atmospheric effects.
+- [ ] Add regressions, render a new version without replacing the current successful render, inspect full-duration frames, FFprobe, and playback.
+
+### Part 2 — UX and manual editing
+- [ ] Inspect current Create/Edit/Export workflow and identify operations that already persist and render end to end.
+- [ ] Implement the narrowest reliable same-project manual edit/version workflow on existing Timeline IR, including validation and persisted overrides; explicitly mark any unsupported operations unavailable.
+- [ ] Add persistence/revision/compiler/render tests; verify project uploads and previous render remain addressable.
+
+### Final validation / blockers
+- [ ] Run focused tests, relevant regressions, production build, TypeScript, Playwright against the live API, then the full suite once per part.
+- [ ] Record exact blocked operations, commands, and file:line; do not claim creative-quality improvement without before/after real-frame evidence.

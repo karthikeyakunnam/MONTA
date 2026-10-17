@@ -172,6 +172,7 @@ class IntentEngine:
             emotional_tones = prior_brief.emotional_tones
         updates["creative_brief"] = CreativeBrief(
             visual_treatments=visual_treatments,
+            text_overlays=(revised_brief.text_overlays or prior_brief.text_overlays),
             emotional_tones=emotional_tones,
             energy_trajectory=revised_brief.energy_trajectory or prior_brief.energy_trajectory,
             evidence=tuple(dict.fromkeys((*prior_brief.evidence, *revised_brief.evidence))),
@@ -225,7 +226,12 @@ class IntentEngine:
         except (ProviderError, asyncio.TimeoutError) as e:
             logger.warning("LLM intent extraction failed: %s", e)
             return revalidate(lexical, **{"degraded": lexical.degraded + (f"LLM extraction failed: {type(e).__name__}: {e}",)})
+        llm_value, ungrounded = self._ground_llm_evidence(llm_value, prompt or "")
         merged = self.merge(lexical, llm_value, self.llm.name)
+        if ungrounded:
+            merged = revalidate(merged, revisions=merged.revisions + (
+                "Discarded LLM fields without prompt-grounded evidence spans: " + ", ".join(ungrounded) + ".",
+            ))
         if arbitration is None:
             return merged
         low = [r for r in arbitration.records if r.field in (L.GENRE, L.EMOTION, L.PACE, L.PLATFORM)
@@ -234,6 +240,31 @@ class IntentEngine:
                                 reasoning=f"models disagree on {r.field}: {r.rationale}",
                                 clarifying_question=f"Which {r.field.replace('_', ' ')} did you mean?") for r in low)
         return revalidate(merged, arbitration=arbitration, ambiguities=merged.ambiguities + extra)
+
+    @staticmethod
+    def _ground_llm_evidence(llm: LLMIntent, prompt: str) -> tuple[LLMIntent, tuple[str, ...]]:
+        """Only let model decisions participate when their cited text occurs in the prompt."""
+        prompt_text = " ".join(prompt.casefold().split())
+        payload = llm.model_dump(mode="python")
+        discarded: list[str] = []
+
+        for name in (*ENUMS, L.REFERENCE, "target_duration_s"):
+            field = payload.get(name)
+            if field is None:
+                continue
+            span = field.get("evidence_span") if isinstance(field, dict) else None
+            normalized_span = " ".join(str(span or "").casefold().split())
+            if not normalized_span or normalized_span not in prompt_text:
+                payload[name] = None
+                discarded.append(name)
+
+        beats = payload.get("pacing_arc", [])
+        grounded_beats = [beat for beat in beats if " ".join(str(beat.get("span", "")).casefold().split()) in prompt_text]
+        if len(grounded_beats) != len(beats):
+            discarded.append("pacing_arc")
+            payload["pacing_arc"] = grounded_beats
+
+        return LLMIntent.model_validate(payload), tuple(discarded)
 
     # ------------------------------------------------------------------ merging
 
