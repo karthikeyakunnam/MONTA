@@ -20,9 +20,10 @@ from enum import StrEnum
 
 from services.prompt_engine import lexicon as L
 from services.prompt_engine.normalizer import BOUNDARY, NormalizedPrompt, normalize
+from shared.contracts.base import revalidate
 from shared.contracts.explain import Evidence, Explained, clamp
 from shared.contracts.intent import (
-    Ambiguity, ArcBeat, Conflict, CreativeBrief, IntentAnalysis, MissingInfo,
+    Ambiguity, ArcBeat, Conflict, CreativeBrief, CreativeDirective, IntentAnalysis, MissingInfo,
     TextOverlayRequirement,
 )
 from shared.contracts.vocab import CaptionStyle, ColorGrade, Emotion, Genre, MusicStyle, Pace, Platform
@@ -448,6 +449,7 @@ class LexicalIntentExtractor:
         """Keep visual look and emotional direction as separate, evidenced axes."""
         visual_treatments: list[str] = []
         evidence: list[str] = []
+        directives: list[CreativeDirective] = []
         dark_cues = r.evidence.get(L.COLOR, {}).get(ColorGrade.DARK.value, ())
         if dark_cues:
             visual_treatments.append("shadow_led_contrast")
@@ -466,6 +468,15 @@ class LexicalIntentExtractor:
             if matches:
                 visual_treatments.append(treatment)
                 evidence.extend(match.group(0) for match in matches)
+                for match in matches:
+                    lead = prompt[max(0, match.start() - 32):match.start()].casefold()
+                    priority = ("required" if re.search(r"\b(include|must|ensure|require)\b", lead)
+                                else "optional" if re.search(r"\b(subtle|optional|if possible)\b", lead)
+                                else "preferred")
+                    directives.append(CreativeDirective(
+                        category="motion" if treatment == "camera_motion" else "visual",
+                        priority=priority, value=treatment, source_span=match.group(0),
+                    ))
 
         requested_tones = []
         tone_candidates = (
@@ -488,11 +499,16 @@ class LexicalIntentExtractor:
         ) else None
         visual_decision, _ = LexicalIntentExtractor.decide(r, L.COLOR, ColorGrade)
         emotion_decision, _ = LexicalIntentExtractor.decide(r, L.EMOTION, Emotion)
+        text_overlays = LexicalIntentExtractor._text_overlay_requirements(r.normalized.raw)
+        directives.extend(CreativeDirective(category="text", priority="required",
+                                            value=f"{item.role}:{item.text}", source_span=item.source_span)
+                          for item in text_overlays)
         return CreativeBrief(
             visual_treatments=tuple(dict.fromkeys(visual_treatments)),
             emotional_tones=tuple(requested_tones),
             energy_trajectory=energy_trajectory,
-            text_overlays=LexicalIntentExtractor._text_overlay_requirements(r.normalized.raw),
+            text_overlays=text_overlays,
+            directives=tuple(directives),
             evidence=tuple(dict.fromkeys(evidence)),
             visual_confidence=visual_decision.confidence if visual_decision else 0.0,
             emotion_confidence=emotion_decision.confidence if emotion_decision else 0.0,
@@ -549,16 +565,17 @@ class LexicalIntentExtractor:
 
             previous = requirements[previous_index]
             spans = tuple(dict.fromkeys((previous.source_span, match.group(0))))
-            requirements[previous_index] = previous.model_copy(update={
-                "source_span": " | ".join(spans),
-                "position": previous.position or position,
-                "color": previous.color or color,
-                "font_family": previous.font_family or font_family,
-                "wide_tracking": previous.wide_tracking if previous.wide_tracking is not None else wide_tracking,
-                "glow": previous.glow if previous.glow is not None else glow,
-                "bold": previous.bold if previous.bold is not None else bold,
-                "background": previous.background or background,
-            })
+            requirements[previous_index] = revalidate(
+                previous,
+                source_span=" | ".join(spans),
+                position=previous.position or position,
+                color=previous.color or color,
+                font_family=previous.font_family or font_family,
+                wide_tracking=previous.wide_tracking if previous.wide_tracking is not None else wide_tracking,
+                glow=previous.glow if previous.glow is not None else glow,
+                bold=previous.bold if previous.bold is not None else bold,
+                background=previous.background or background,
+            )
         return tuple(requirements)
 
     @staticmethod

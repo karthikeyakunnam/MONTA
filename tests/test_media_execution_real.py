@@ -203,6 +203,31 @@ async def test_studio_color_controls_render_through_ffmpeg(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fade_index", [1, 2])
+async def test_mixed_crossfade_and_cuts_keep_all_real_video_and_audio(tmp_path: Path, fade_index: int):
+    sources = [
+        _generate_synthetic_clip(tmp_path / f"mixed-{index}.mp4", duration_s=2.0,
+                                 color=color, freq=440 + index * 110)
+        for index, color in enumerate(("red", "green", "blue"))
+    ]
+    segments = tuple(TimelineSegmentIR(
+        segment_id=f"shot-{index}", clip_id=f"clip-{index}", source_path=str(source),
+        source_in_ms=0, source_out_ms=2000,
+        timeline_start_ms=index * 2000, timeline_end_ms=(index + 1) * 2000,
+        transition_in=TransitionType.CROSSFADE if index == fade_index else TransitionType.CUT,
+        transition_in_ms=200 if index == fade_index else 0,
+    ) for index, source in enumerate(sources))
+    timeline = TimelineIR(project_id="mixed-boundaries", width=320, height=180, fps=30,
+                          aspect_ratio=AspectRatio.LANDSCAPE_16_9, scale_mode=ScaleMode.FILL,
+                          video_segments=segments, total_duration_ms=6000)
+    result = await MediaRenderer().render(timeline, tmp_path / "mixed-boundaries.mp4")
+    assert result.success and result.validation_passed, result.warnings
+    assert abs(result.duration_s - 5.8) <= 0.1
+    assert result.audio_duration_s is not None and abs(result.audio_duration_s - result.duration_s) < 0.15
+    assert "concat=n=2:v=1:a=1" in result.execution_plan["filter_graph"]
+
+
+@pytest.mark.asyncio
 async def test_real_ffmpeg_subclip_and_concat(synthetic_media, tmp_path: Path):
     clip1, clip2 = synthetic_media
     out_file = tmp_path / "rendered_concat.mp4"

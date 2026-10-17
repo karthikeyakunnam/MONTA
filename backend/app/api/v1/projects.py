@@ -231,6 +231,24 @@ async def create_revision(project_id: str, payload: RevisionCreate, db: AsyncSes
     """Create a new prompt/options version in the same project using its stored clips."""
     service = _service(db, queue=queue, progress=progress)
     try:
+        summary = await service.summary(project_id, user_id)
+        if (payload.expected_prompt_version is not None
+                and payload.expected_prompt_version != summary.project.prompt_version):
+            raise ProjectConflict("This edit changed in another session; refresh before revising")
+        manual = payload.edit_options.manual_timeline
+        if manual is not None:
+            durations = {clip.id: round(clip.duration * 1000) for clip in summary.usable_clips
+                         if clip.duration is not None}
+            for shot in manual.shots:
+                if shot.clip_id not in durations or shot.source_out_ms > durations[shot.clip_id]:
+                    raise ProjectConflict(f"Manual shot {shot.clip_id} is unavailable or exceeds its source duration")
+            rendered_duration_s = sum(shot.source_out_ms - shot.source_in_ms - shot.transition_in_ms
+                                      for shot in manual.shots) / 1000
+            if manual.captions is not None and any(caption.end > rendered_duration_s
+                                                   for caption in manual.captions):
+                raise ProjectConflict("Manual caption timing exceeds the edited video duration")
+            if manual.captions and payload.edit_options.caption_style == "None":
+                raise ProjectConflict("Manual captions require a caption style")
         job = await service.revise(
             project_id, user_id, prompt=payload.prompt, target_platform=payload.target_platform,
             edit_options=payload.edit_options.model_dump(mode="json"), idempotency_key=payload.idempotency_key,

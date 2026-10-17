@@ -127,6 +127,27 @@ export interface EditOptions {
   shadow_coolness?: number | null;
   highlight_warmth?: number | null;
   vignette?: number | null;
+  manual_timeline?: ManualTimeline | null;
+}
+
+export interface ManualShot {
+  clip_id: string;
+  source_in_ms: number;
+  source_out_ms: number;
+  transition_in: string;
+  transition_in_ms: number;
+  volume: number;
+  fade_in_ms?: number;
+  fade_out_ms?: number;
+  color?: { brightness?: number; contrast?: number; saturation?: number; gamma?: number;
+    shadow_coolness?: number; highlight_warmth?: number; vignette?: number } | null;
+}
+
+export interface ManualTimeline {
+  shots: ManualShot[];
+  music_volume?: number | null;
+  music_ducking?: boolean | null;
+  captions?: Array<{ start: number; end: number; text: string }> | null;
 }
 
 export interface TimelineArtifact {
@@ -145,6 +166,10 @@ export interface TimelineArtifact {
       timeline_end_ms: number;
       transition_in: string;
       transition_in_ms: number;
+      volume: number;
+      fade_in_ms: number;
+      fade_out_ms: number;
+      color?: ManualShot['color'];
       emotional_stage?: string | null;
       narrative_role?: string | null;
       act_id?: string | null;
@@ -165,6 +190,18 @@ export interface TimelineArtifact {
     caption_state?: string;
     caption_error?: string;
     caption_segments?: Array<{ start: number; end: number; text: string }>;
+    creative_brief?: {
+      directives?: Array<{
+        category: string;
+        priority: 'required' | 'preferred' | 'optional';
+        value: string;
+        source_span: string;
+        origin: 'prompt' | 'explicit_setting';
+      }>;
+    };
+    shot_decisions?: Array<{ clip_id: string; reason: string; origin: 'ai_inference' | 'user_override' }>;
+    manual_timeline_applied?: boolean;
+    unsupported_effects?: Array<{ effect: string; status: string; reason: string; evidence?: string[] }>;
   };
 }
 
@@ -335,6 +372,7 @@ export const startPipeline = (id: string, idempotencyKey = crypto.randomUUID()) 
   });
 export const createRevision = (id: string, body: {
   prompt: string; target_platform: string; edit_options: EditOptions; idempotency_key: string;
+  expected_prompt_version?: number;
 }) => request<JobSubmission>(`/projects/${id}/revisions`, { method: 'POST', body: JSON.stringify(body) });
 export const retryRevision = (projectId: string, jobId: string, idempotency_key: string) =>
   request<JobSubmission>(`/projects/${projectId}/jobs/${jobId}/retry`, {

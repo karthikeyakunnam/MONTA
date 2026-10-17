@@ -41,7 +41,8 @@ def test_quoted_title_subtitle_credits_and_caption_are_preserved_as_requirements
         'White caption overlay "PURE AS BIRTH".'
     )
 
-    requirements = lex.extract(prompt).creative_brief.text_overlays
+    brief = lex.extract(prompt).creative_brief
+    requirements = brief.text_overlays
 
     assert [(item.role, item.text) for item in requirements] == [
         ("title", "PERSPECTIVES"),
@@ -58,6 +59,10 @@ def test_quoted_title_subtitle_credits_and_caption_are_preserved_as_requirements
     assert requirements[1].color == "white"
     assert requirements[1].font_family == "sans_serif"
     assert requirements[4].color == "white"
+    assert [(item.priority, item.value) for item in brief.directives if item.category == "text"] == [
+        ("required", f"{item.role}:{item.text}") for item in requirements
+    ]
+    assert all(all(span in prompt for span in item.source_span.split(" | ")) for item in brief.directives)
 
 
 def test_every_field_explains_itself():
@@ -194,6 +199,9 @@ def test_physical_effect_requests_are_explicitly_classified_from_prompt_evidence
     assert {"film grain", "dust particles", "atmospheric haze", "rim lighting", "slow camera movements"} <= set(
         intent.creative_brief.evidence
     )
+    directives = {item.value: item for item in intent.creative_brief.directives}
+    assert directives["film_grain"].priority == "optional"
+    assert all(item.source_span in intent.raw_prompt for item in directives.values())
 
 
 def test_targeted_happier_revision_preserves_shadowy_visual_treatment_and_motivation():

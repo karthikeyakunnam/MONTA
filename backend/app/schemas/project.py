@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models import ClipStatus, JobState, ProjectStatus
 from shared.contracts.vocab import CaptionStyle, ColorGrade, MusicStyle, Pace
+from services.timeline_generator.manual import ManualTimeline
 
 PLATFORMS = ("instagram", "tiktok", "youtube_short", "youtube", "general")
 
@@ -43,6 +44,7 @@ class EditOptions(BaseModel):
     aspect_ratio: Literal["9:16", "16:9", "1:1", "4:5"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )
+    manual_timeline: ManualTimeline | None = Field(None, exclude_if=lambda value: value is None)
 
 
 class ProjectCreate(BaseModel):
@@ -72,6 +74,7 @@ class RevisionCreate(BaseModel):
     target_platform: Literal[PLATFORMS] = "instagram"  # type: ignore[valid-type]
     edit_options: EditOptions = Field(default_factory=EditOptions)
     idempotency_key: str = Field(..., min_length=8, max_length=96)
+    expected_prompt_version: int | None = Field(None, ge=1)
 
     @field_validator("prompt", "idempotency_key")
     @classmethod

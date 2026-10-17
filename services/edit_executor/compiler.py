@@ -119,6 +119,9 @@ class FFmpegCompiler:
                 v_chain.append(f"scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2,setsar=1")
 
             v_chain.append(f"fps={fps:.4f}")
+            # Concat outputs use AVTB; keep every segment on that time base so
+            # a later xfade can accept either a prior concat or a raw segment.
+            v_chain.append("settb=AVTB")
 
             # Color adjustments
             if seg.color is not None:
@@ -217,10 +220,12 @@ class FFmpegCompiler:
         final_a = "a_concat"
 
         if has_xfade and len(timeline.video_segments) > 1:
-            # Construct progressive xfade chain
+            # Build each boundary with its declared operation. A cut represented
+            # as a 1ms xfade can have its offset beyond the previous last frame;
+            # FFmpeg then ends the video at that boundary while audio continues.
             cur_v = video_nodes[0]
             cur_a = audio_nodes[0]
-            offset = timeline.video_segments[0].timeline_duration_ms / 1000.0
+            current_frames = round(timeline.video_segments[0].timeline_duration_ms * fps / 1000)
 
             for j in range(1, len(timeline.video_segments)):
                 seg = timeline.video_segments[j]
@@ -230,20 +235,23 @@ class FFmpegCompiler:
                 nxt_a_out = f"xfa_{j}"
 
                 is_xfade_seg = seg.transition_in in _TRANSITION_XFADE_MAP and seg.transition_in_ms > 0
-                trans_dur = (seg.transition_in_ms / 1000.0) if is_xfade_seg else 0.001
-                xfade_name = _TRANSITION_XFADE_MAP.get(seg.transition_in, "fade")
-                xfade_offset = max(0.0, offset - trans_dur)
-
-                filters.append(
-                    f"{cur_v}{next_v}xfade=transition={xfade_name}:duration={trans_dur:.3f}:offset={xfade_offset:.3f}[{nxt_v_out}]"
-                )
-                filters.append(
-                    f"{cur_a}{next_a}acrossfade=d={trans_dur:.3f}[{nxt_a_out}]"
-                )
+                next_frames = round(seg.timeline_duration_ms * fps / 1000)
+                if is_xfade_seg:
+                    overlap_frames = max(1, round(seg.transition_in_ms * fps / 1000))
+                    trans_dur = overlap_frames / fps
+                    xfade_name = _TRANSITION_XFADE_MAP[seg.transition_in]
+                    xfade_offset = max(0.0, (current_frames - overlap_frames) / fps)
+                    filters.append(
+                        f"{cur_v}{next_v}xfade=transition={xfade_name}:duration={trans_dur:.3f}:offset={xfade_offset:.3f}[{nxt_v_out}]"
+                    )
+                    filters.append(f"{cur_a}{next_a}acrossfade=d={trans_dur:.3f}[{nxt_a_out}]")
+                    current_frames += next_frames - overlap_frames
+                else:
+                    filters.append(f"{cur_v}{cur_a}{next_v}{next_a}concat=n=2:v=1:a=1[{nxt_v_out}][{nxt_a_out}]")
+                    current_frames += next_frames
 
                 cur_v = f"[{nxt_v_out}]"
                 cur_a = f"[{nxt_a_out}]"
-                offset = xfade_offset + (seg.timeline_duration_ms / 1000.0)
 
             final_v = cur_v.strip("[]")
             final_a = cur_a.strip("[]")

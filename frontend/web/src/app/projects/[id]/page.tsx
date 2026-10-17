@@ -30,6 +30,7 @@ import {
   type ProgressEvent,
   type EditOptions,
   type Job,
+  type ManualShot,
   type ProjectDetail,
   type TimelineArtifact,
   type UploadLimits,
@@ -50,6 +51,8 @@ const MUSIC_STYLES = ['epic orchestral', 'hard trap', 'cinematic trailer', 'emot
 const STYLE_PRESETS = ['cinematic', 'trailer', 'vlog', 'hype', 'montage'];
 const ACTIVE_JOB_STATES = ['pending', 'queued', 'running'];
 const defaultAspect = (platform: string) => ['instagram', 'tiktok', 'youtube_short'].includes(platform) ? '9:16' : '16:9';
+type ManualCaption = { start: number; end: number; text: string };
+type ManualDraftSnapshot = { shots: ManualShot[]; musicVolume: number; musicDucking: boolean | null; captions: ManualCaption[] | null };
 
 function optionsForRevision(options: EditOptions): EditOptions {
   return {
@@ -71,6 +74,7 @@ function optionsForRevision(options: EditOptions): EditOptions {
     shadow_coolness: options.shadow_coolness ?? null,
     highlight_warmth: options.highlight_warmth ?? null,
     vignette: options.vignette ?? null,
+    manual_timeline: options.manual_timeline ?? null,
   };
 }
 
@@ -89,6 +93,15 @@ export default function ProjectPage() {
   const [busy, setBusy] = useState(false);
   const [revisionOpen, setRevisionOpen] = useState(false);
   const [revisionBusy, setRevisionBusy] = useState(false);
+  const [keepManualOverride, setKeepManualOverride] = useState<boolean | null>(null);
+  const [manualShots, setManualShots] = useState<ManualShot[] | null>(null);
+  const [manualUndo, setManualUndo] = useState<ManualDraftSnapshot[]>([]);
+  const [manualRedo, setManualRedo] = useState<ManualDraftSnapshot[]>([]);
+  const [manualMusicVolume, setManualMusicVolume] = useState(1);
+  const [manualMusicDucking, setManualMusicDucking] = useState<boolean | null>(null);
+  const [manualCaptions, setManualCaptions] = useState<ManualCaption[] | null>(null);
+  const [compareVersionA, setCompareVersionA] = useState('');
+  const [compareVersionB, setCompareVersionB] = useState('');
   const revisionLock = useRef(false);
   const [revisionPrompt, setRevisionPrompt] = useState('');
   const [revisionPlatform, setRevisionPlatform] = useState('instagram');
@@ -148,6 +161,7 @@ export default function ProjectPage() {
     setRevisionPrompt(project.raw_prompt ?? '');
     setRevisionPlatform(project.target_platform);
     setRevisionOptions(optionsForRevision(project.edit_options));
+    setKeepManualOverride(null);
     setRevisionOpen(true);
     setActionFailure(null);
   };
@@ -155,19 +169,117 @@ export default function ProjectPage() {
   const submitRevision = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (revisionLock.current || !project || !revisionPrompt.trim()) return;
+    const manualConflict = Boolean(project.edit_options.manual_timeline && (
+      revisionPrompt.trim() !== (project.raw_prompt ?? '').trim()
+      || revisionPlatform !== project.target_platform
+      || revisionOptions.target_duration_s !== (project.edit_options.target_duration_s ?? null)
+    ));
+    if (manualConflict && keepManualOverride === null) {
+      setActionFailure({ title: 'Resolve the manual timeline',
+        detail: 'The brief or duration changed. Choose whether to keep your manual shots or let AI build a new timeline.' });
+      return;
+    }
     revisionLock.current = true;
     setRevisionBusy(true);
     setActionFailure(null);
     try {
       await createRevision(projectId, {
         prompt: revisionPrompt.trim(), target_platform: revisionPlatform,
-        edit_options: { ...revisionOptions, aspect_ratio: revisionOptions.aspect_ratio ?? defaultAspect(revisionPlatform) },
+        edit_options: { ...revisionOptions, aspect_ratio: revisionOptions.aspect_ratio ?? defaultAspect(revisionPlatform),
+          manual_timeline: keepManualOverride === false ? null : revisionOptions.manual_timeline },
         idempotency_key: crypto.randomUUID(),
+        expected_prompt_version: project.prompt_version,
       });
       setRevisionOpen(false);
       await refresh();
     } catch (error) {
       setActionFailure(toFailure(error, 'Submitting this edit revision'));
+    } finally {
+      revisionLock.current = false;
+      setRevisionBusy(false);
+    }
+  };
+
+  const changeManual = (next: ManualShot[]) => {
+    if (!manualShots) return;
+    setManualUndo((history) => [...history.slice(-29), {
+      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions,
+    }]);
+    setManualRedo([]);
+    setManualShots(next);
+  };
+
+  const changeManualMusic = (volume: number, ducking: boolean | null) => {
+    if (!manualShots) return;
+    setManualUndo((history) => [...history.slice(-29), {
+      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions,
+    }]);
+    setManualRedo([]);
+    setManualMusicVolume(volume);
+    setManualMusicDucking(ducking);
+  };
+
+  const changeManualCaptions = (captions: ManualCaption[]) => {
+    if (!manualShots || manualCaptions === null) return;
+    setManualUndo((history) => [...history.slice(-29), {
+      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions,
+    }]);
+    setManualRedo([]);
+    setManualCaptions(captions);
+  };
+
+  const startManualEdit = () => {
+    if (!timeline) return;
+    setManualShots(timeline.timeline.video_segments.map((shot) => ({
+      clip_id: shot.clip_id, source_in_ms: shot.source_in_ms, source_out_ms: shot.source_out_ms,
+      transition_in: shot.transition_in, transition_in_ms: shot.transition_in_ms, volume: shot.volume,
+      fade_in_ms: shot.fade_in_ms, fade_out_ms: shot.fade_out_ms, color: shot.color,
+    })));
+    setManualUndo([]);
+    setManualRedo([]);
+    setManualMusicVolume(project?.edit_options.manual_timeline?.music_volume ?? 1);
+    setManualMusicDucking(project?.edit_options.manual_timeline?.music_ducking ?? null);
+    setManualCaptions(timeline.trace.caption_segments ?? project?.edit_options.manual_timeline?.captions ?? null);
+  };
+
+  const updateManualShot = (index: number, change: Partial<ManualShot>) => {
+    if (!manualShots) return;
+    changeManual(manualShots.map((shot, at) => at === index ? { ...shot, ...change } : shot));
+  };
+
+  const submitManualEdit = async () => {
+    if (!project || !manualShots || revisionLock.current) return;
+    const durations = new Map(project.clips.map((clip) => [clip.id, Math.round((clip.duration ?? 0) * 1000)]));
+    if (!manualShots.length || manualShots.some((shot) => shot.source_out_ms <= shot.source_in_ms
+      || shot.source_in_ms < 0 || shot.source_out_ms > (durations.get(shot.clip_id) ?? 0))) {
+      setActionFailure({ title: 'Check the shot ranges', detail: 'Every shot needs an in point before its out point, within the uploaded clip.' });
+      return;
+    }
+    const editedDuration = (manualShots.reduce((total, shot) => total + shot.source_out_ms - shot.source_in_ms - shot.transition_in_ms, 0)) / 1000;
+    if (manualCaptions?.some((caption) => !caption.text.trim() || caption.start < 0
+      || caption.end <= caption.start || caption.end > editedDuration)) {
+      setActionFailure({ title: 'Check caption text and timing', detail: 'Each caption needs text and a time range inside the edited video.' });
+      return;
+    }
+    if (manualCaptions?.length && project.edit_options.caption_style === 'None') {
+      setActionFailure({ title: 'Choose a caption style', detail: 'Captions are off in this project. Set a caption style in Revise edit before rendering manual captions.' });
+      return;
+    }
+    revisionLock.current = true;
+    setRevisionBusy(true);
+    setActionFailure(null);
+    try {
+      await createRevision(projectId, {
+        prompt: project.raw_prompt ?? '', target_platform: project.target_platform,
+        edit_options: { ...optionsForRevision(project.edit_options),
+          manual_timeline: { shots: manualShots, music_volume: manualMusicVolume,
+            music_ducking: manualMusicDucking, captions: manualCaptions } },
+        idempotency_key: crypto.randomUUID(), expected_prompt_version: project.prompt_version,
+      });
+      setManualShots(null);
+      await refresh();
+    } catch (error) {
+      setActionFailure(toFailure(error, 'Rendering this manual edit'));
     } finally {
       revisionLock.current = false;
       setRevisionBusy(false);
@@ -259,12 +371,15 @@ export default function ProjectPage() {
   // a previously running API instance that still returns the older detail shape.
   const renders = project.renders ?? [];
   const usable = project.clips.filter((c) => c.status !== 'rejected');
+  const editableSources = usable.filter((clip) => (clip.duration ?? 0) > 0 && clip.status !== 'failed');
   const rejected = project.clips.length - usable.length;
   const latestJob = project.jobs[0] ?? null;
   const activeJob = project.jobs.find((job) => ACTIVE_JOB_STATES.includes(job.state)) ?? null;
   const currentJob = activeJob ?? latestJob;
   const running = ACTIVE_PIPELINE_STATUSES.includes(project.status);
   const startable = canStartPipeline(project.status, usable.length);
+  const manualDurationS = manualShots?.reduce((total, shot) => total + shot.source_out_ms - shot.source_in_ms
+    - shot.transition_in_ms, 0) ?? 0;
 
   // Merge the REST replay with live events, de-duplicated: a reconnect can deliver the
   // same event twice and the feed should not stutter.
@@ -276,9 +391,17 @@ export default function ProjectPage() {
   const planIsActive = Boolean(activeJob && timelineJobId === activeJob.id);
   const planIsLatest = Boolean(latestJob && timelineJobId === latestJob.id);
   const planHeading = planIsActive ? 'Proposed plan' : planIsLatest ? 'Rendered timeline' : 'Previous rendered timeline';
+  const versionChoices = [...new Set(project.jobs.map((job) => job.prompt_version).filter((v): v is number => v != null))];
+  const selectedA = project.jobs.find((job) => String(job.prompt_version) === (compareVersionA || String(project.prompt_version)));
+  const selectedB = project.jobs.find((job) => String(job.prompt_version) === (compareVersionB || String(Math.max(1, project.prompt_version - 1))));
 
   return (
     <div className="studio-page">
+      <nav className="row" aria-label="Studio areas" style={{ marginBottom: 14 }}>
+        <a className="btn secondary small" href="#create-area">Create</a>
+        <a className="btn secondary small" href="#timeline-plan-heading">Edit</a>
+        <a className="btn secondary small" href="#render-heading">Export</a>
+      </nav>
       <div className="row" style={{ justifyContent: 'space-between', alignItems: 'flex-start' }}>
         <div>
           <Link href="/" className="muted" style={{ fontSize: 12.5 }}>
@@ -323,6 +446,17 @@ export default function ProjectPage() {
                   onChange={(event) => setRevisionPrompt(event.target.value)} />
                 <small className="muted">Edit the full current instruction. Your existing uploads stay on this project.</small>
               </label>
+              {project.edit_options.manual_timeline && (
+                <label className="field"><span>Manual timeline for this revision</span>
+                  <select aria-label="Resolve manual timeline" value={keepManualOverride === null ? '' : keepManualOverride ? 'keep' : 'rebuild'}
+                    onChange={(event) => setKeepManualOverride(event.target.value === '' ? null : event.target.value === 'keep')}>
+                    <option value="">Choose when changing the brief or duration</option>
+                    <option value="keep">Keep my shots and trims</option>
+                    <option value="rebuild">Let AI rebuild the shots</option>
+                  </select>
+                  <small className="muted">Keeping manual shots preserves their order and ranges. Rebuilding uses your new prompt and existing uploads.</small>
+                </label>
+              )}
               <div className="grid cols-2">
                 <label className="field">
                   <span>Export target</span>
@@ -534,7 +668,8 @@ export default function ProjectPage() {
           </span>
         </div>
         {activeJob && (
-          <div className="card" style={{ marginTop: 14 }}>
+          <details className="card" style={{ marginTop: 14 }}>
+            <summary>Advanced job details · version {activeJob.prompt_version ?? project.prompt_version}</summary>
             <div className="row" style={{ justifyContent: 'space-between' }}>
               <span>Active job · v{activeJob.prompt_version ?? project.prompt_version} · <span className="mono">{activeJob.id}</span></span>
               <Badge tone={jobStateTone(activeJob.state)}>{activeJob.state}</Badge>
@@ -543,9 +678,152 @@ export default function ProjectPage() {
               <button type="button" className="btn danger small" style={{ marginTop: 10 }} disabled={busy}
                 onClick={() => void cancelJob(activeJob)}>Cancel queued revision</button>
             )}
-          </div>
+          </details>
         )}
       </section>
+
+      {timeline && (
+        <section className="section" aria-labelledby="manual-edit-heading">
+          <div className="section-head">
+            <div>
+              <h2 id="manual-edit-heading">Manual timeline</h2>
+              <p className="hint">Adjust saved shots, then render a new version. The current MP4 stays available while it renders.</p>
+            </div>
+            {!manualShots && <button className="btn secondary small" type="button" onClick={startManualEdit}
+              disabled={running || timeline.trace.prompt_version !== project.prompt_version}>Edit shots</button>}
+          </div>
+          {project.render_url && <video className="render-video" controls preload="metadata"
+            src={mediaUrl(project.render_url)} aria-label="Current edit preview" style={{ maxHeight: 540, marginBottom: 12 }} />}
+          {manualShots && <div className="card">
+            <div className="row" style={{ marginBottom: 12 }}>
+              <button className="btn secondary small" type="button" disabled={!manualUndo.length} onClick={() => {
+                setManualRedo((history) => [...history, { shots: manualShots,
+                  musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions }]);
+                const previous = manualUndo[manualUndo.length - 1];
+                setManualShots(previous.shots); setManualMusicVolume(previous.musicVolume);
+                setManualMusicDucking(previous.musicDucking); setManualCaptions(previous.captions);
+                setManualUndo(manualUndo.slice(0, -1));
+              }}>Undo</button>
+              <button className="btn secondary small" type="button" disabled={!manualRedo.length} onClick={() => {
+                setManualUndo((history) => [...history, { shots: manualShots,
+                  musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions }]);
+                const next = manualRedo[manualRedo.length - 1];
+                setManualShots(next.shots); setManualMusicVolume(next.musicVolume);
+                setManualMusicDucking(next.musicDucking); setManualCaptions(next.captions);
+                setManualRedo(manualRedo.slice(0, -1));
+              }}>Redo</button>
+              <button className="btn secondary small" type="button" onClick={() => setManualShots(null)}>Discard draft</button>
+            </div>
+            {manualShots.map((shot, index) => {
+              const source = project.clips.find((clip) => clip.id === shot.clip_id);
+              return <div className="plan-row" key={`${shot.clip_id}-${index}`}>
+                <div className="plan-index">{index + 1}</div>
+                <div className="plan-main"><label>Source clip <select aria-label={`Shot ${index + 1} source clip`}
+                  value={shot.clip_id} onChange={(event) => {
+                    const selected = project.clips.find((clip) => clip.id === event.target.value);
+                    updateManualShot(index, { clip_id: event.target.value, source_in_ms: 0,
+                      source_out_ms: Math.min(3000, Math.round((selected?.duration ?? 0) * 1000)) });
+                  }}>
+                  {editableSources.map((clip) => <option key={clip.id} value={clip.id}>{clip.original_filename}</option>)}
+                </select></label>
+                  <span className="muted">{formatDuration((shot.source_out_ms - shot.source_in_ms) / 1000)} selected</span></div>
+                <label className="plan-range">In (s)<input aria-label={`Shot ${index + 1} in point`} type="number" min="0" step="0.1"
+                  value={shot.source_in_ms / 1000} onChange={(event) => updateManualShot(index, { source_in_ms: Math.round(Number(event.target.value) * 1000) })} /></label>
+                <label className="plan-range">Out (s)<input aria-label={`Shot ${index + 1} out point`} type="number" min="0.1" step="0.1"
+                  max={source?.duration ?? undefined} value={shot.source_out_ms / 1000}
+                  onChange={(event) => updateManualShot(index, { source_out_ms: Math.round(Number(event.target.value) * 1000) })} /></label>
+                <label className="plan-range">Transition<select aria-label={`Shot ${index + 1} transition`} value={shot.transition_in}
+                  disabled={index === 0}
+                  onChange={(event) => updateManualShot(index, { transition_in: event.target.value,
+                    transition_in_ms: event.target.value === 'cut' ? 0 : 250 })}>
+                  <option value="cut">Cut</option><option value="crossfade">Crossfade</option>
+                  <option value="fade_black">Fade through black</option><option value="fade_white">Fade through white</option>
+                </select></label>
+                <label className="plan-range">Source audio<input aria-label={`Shot ${index + 1} volume`} type="number" min="0" max="4" step="0.1"
+                  value={shot.volume} onChange={(event) => updateManualShot(index, { volume: Number(event.target.value) })} /></label>
+                <details className="plan-main"><summary>Shot controls</summary>
+                  <label>Transition duration (ms)<input aria-label={`Shot ${index + 1} transition duration`} type="number"
+                    min="0" max="2000" step="50" disabled={index === 0 || shot.transition_in === 'cut'}
+                    value={shot.transition_in_ms} onChange={(event) => updateManualShot(index, { transition_in_ms: Number(event.target.value) })} /></label>
+                  <label>Fade in (ms)<input aria-label={`Shot ${index + 1} fade in`} type="number" min="0" max="2000" step="50"
+                    value={shot.fade_in_ms ?? 0} onChange={(event) => updateManualShot(index, { fade_in_ms: Number(event.target.value) })} /></label>
+                  <label>Fade out (ms)<input aria-label={`Shot ${index + 1} fade out`} type="number" min="0" max="2000" step="50"
+                    value={shot.fade_out_ms ?? 0} onChange={(event) => updateManualShot(index, { fade_out_ms: Number(event.target.value) })} /></label>
+                  <label>Brightness<input aria-label={`Shot ${index + 1} brightness`} type="number" min="-1" max="1" step="0.05"
+                    value={shot.color?.brightness ?? 0} onChange={(event) => updateManualShot(index, {
+                      color: { ...shot.color, brightness: Number(event.target.value) },
+                    })} /></label>
+                  <label>Saturation<input aria-label={`Shot ${index + 1} saturation`} type="number" min="0" max="3" step="0.05"
+                    value={shot.color?.saturation ?? 1} onChange={(event) => updateManualShot(index, {
+                      color: { ...shot.color, saturation: Number(event.target.value) },
+                    })} /></label>
+                </details>
+                <div className="row">
+                  <button className="btn secondary small" type="button" disabled={index === 0}
+                    onClick={() => { const next = [...manualShots]; [next[index - 1], next[index]] = [next[index], next[index - 1]];
+                      next[0] = { ...next[0], transition_in: 'cut', transition_in_ms: 0 }; changeManual(next); }}>↑</button>
+                  <button className="btn secondary small" type="button" disabled={index === manualShots.length - 1}
+                    onClick={() => { const next = [...manualShots]; [next[index], next[index + 1]] = [next[index + 1], next[index]];
+                      next[0] = { ...next[0], transition_in: 'cut', transition_in_ms: 0 }; changeManual(next); }}>↓</button>
+                  <button className="btn secondary small" type="button" disabled={shot.source_out_ms - shot.source_in_ms < 400}
+                    onClick={() => { const midpoint = Math.round((shot.source_in_ms + shot.source_out_ms) / 2);
+                      changeManual([...manualShots.slice(0, index), { ...shot, source_out_ms: midpoint },
+                        { ...shot, source_in_ms: midpoint, transition_in: 'cut', transition_in_ms: 0 },
+                        ...manualShots.slice(index + 1)]); }}>Split</button>
+                  <button className="btn secondary small" type="button" disabled={manualShots.length === 1}
+                    onClick={() => { const next = manualShots.filter((_, at) => at !== index);
+                      next[0] = { ...next[0], transition_in: 'cut', transition_in_ms: 0 }; changeManual(next); }}>Remove</button>
+                </div>
+              </div>;
+            })}
+            <button className="btn secondary small" type="button" disabled={manualShots.length >= 100 || editableSources.length === 0}
+              onClick={() => { const source = editableSources[0]; changeManual([...manualShots, {
+                clip_id: source.id, source_in_ms: 0,
+                source_out_ms: Math.min(3000, Math.round((source.duration ?? 0) * 1000)),
+                transition_in: 'cut', transition_in_ms: 0, volume: 1,
+              }]); }}>Add shot</button>
+            <div className="row" style={{ marginTop: 12 }}>
+              <label>Music volume <input aria-label="Music volume" type="number" min="0" max="4" step="0.1"
+                disabled={timeline.timeline.audio_segments.length === 0}
+                value={manualMusicVolume} onChange={(event) => changeManualMusic(Number(event.target.value), manualMusicDucking)} /></label>
+              <label>Speech ducking <select aria-label="Speech ducking" disabled={timeline.timeline.audio_segments.length === 0}
+                value={manualMusicDucking === null ? '' : manualMusicDucking ? 'on' : 'off'}
+                onChange={(event) => changeManualMusic(manualMusicVolume,
+                  event.target.value === '' ? null : event.target.value === 'on')}>
+                <option value="">Keep current mix</option><option value="on">On</option><option value="off">Off</option>
+              </select></label>
+            </div>
+            {manualCaptions !== null && <details style={{ marginTop: 12 }}>
+              <summary>Captions · edit saved transcript</summary>
+              {manualCaptions.map((caption, index) => <div className="row" key={index} style={{ marginTop: 8 }}>
+                <label>Start (s)<input aria-label={`Caption ${index + 1} start`} type="number" min="0" step="0.1"
+                  value={caption.start} onChange={(event) => changeManualCaptions(manualCaptions.map((item, at) =>
+                    at === index ? { ...item, start: Number(event.target.value) } : item))} /></label>
+                <label>End (s)<input aria-label={`Caption ${index + 1} end`} type="number" min="0.1" step="0.1"
+                  value={caption.end} onChange={(event) => changeManualCaptions(manualCaptions.map((item, at) =>
+                    at === index ? { ...item, end: Number(event.target.value) } : item))} /></label>
+                <label>Text<input aria-label={`Caption ${index + 1} text`} maxLength={500} value={caption.text}
+                  onChange={(event) => changeManualCaptions(manualCaptions.map((item, at) =>
+                    at === index ? { ...item, text: event.target.value } : item))} /></label>
+                <button className="btn secondary small" type="button"
+                  onClick={() => changeManualCaptions(manualCaptions.filter((_, at) => at !== index))}>Remove caption</button>
+              </div>)}
+              <button className="btn secondary small" type="button"
+                disabled={(manualCaptions.at(-1)?.end ?? 0) >= manualDurationS / 1000 - 0.1}
+                onClick={() => { const start = manualCaptions.at(-1)?.end ?? 0;
+                  changeManualCaptions([...manualCaptions, { start, end: Math.min(start + 1, manualDurationS / 1000),
+                    text: 'New caption' }]); }}>Add caption</button>
+            </details>}
+            <p className="hint" style={{ marginTop: 8 }}>{timeline.timeline.audio_segments.length === 0 ? 'Music mix controls unavailable: no external music track is in this edit. ' : ''}Global framing remains in Revise edit. {manualCaptions === null ? 'Caption timing controls unavailable: this version has no saved transcription segments.' : 'Edited captions use the saved transcript and render as burn-in text.'}</p>
+            <div className="row" style={{ marginTop: 12 }}>
+              <button className="btn" type="button" disabled={revisionBusy || running} onClick={() => void submitManualEdit()}>
+                {revisionBusy ? 'Submitting…' : 'Render edited version'}
+              </button>
+              <span className="hint">Changes persist with the new project version after submission.</span>
+            </div>
+          </div>}
+        </section>
+      )}
 
       <section className="section" aria-labelledby="timeline-plan-heading">
         <div className="section-head">
@@ -565,6 +843,7 @@ export default function ProjectPage() {
                   <div className="plan-main">
                     <strong>{source?.original_filename ?? segment.clip_id}</strong>
                     <span className="muted">{segment.narrative_role ?? segment.act_id ?? 'Story shot'}{segment.emotional_stage ? ` · ${segment.emotional_stage}` : ''}{segment.is_hero ? ' · hero shot' : ''}</span>
+                    <span className="muted">{timeline.trace.shot_decisions?.[index]?.origin === 'user_override' ? 'Manual choice' : 'AI inference'}{timeline.trace.shot_decisions?.[index]?.reason ? ` · ${timeline.trace.shot_decisions[index].reason}` : ''}</span>
                   </div>
                   <div className="plan-range"><span>Source</span>{formatDuration(segment.source_in_ms / 1000)} → {formatDuration(segment.source_out_ms / 1000)}</div>
                   <div className="plan-range"><span>Timeline</span>{formatDuration(segment.timeline_start_ms / 1000)} → {formatDuration(segment.timeline_end_ms / 1000)}</div>
@@ -573,6 +852,12 @@ export default function ProjectPage() {
               );
             })}
             <div className="plan-support">
+              {Boolean(timeline.trace.creative_brief?.directives?.length) && <>
+                <strong>Brief requirements and preferences</strong>
+                {timeline.trace.creative_brief?.directives?.map((directive, index) => <span key={`${directive.category}-${directive.value}-${index}`}>
+                  {directive.priority} · {directive.category} · {directive.value} · {directive.origin === 'explicit_setting' ? 'Project setting' : `Prompt: ${directive.source_span}`}
+                </span>)}
+              </>}
               <strong>Audio</strong>
               {timeline.timeline.audio_segments.length ? timeline.timeline.audio_segments.map((audio) => (
                 <span key={audio.track_id}>{audio.track_id} · {formatDuration(audio.timeline_start_ms / 1000)}–{formatDuration(audio.timeline_end_ms / 1000)} · {audio.ducking ? 'waveform ducking' : 'steady mix'} · {audio.volume.toFixed(2)}×</span>
@@ -581,6 +866,12 @@ export default function ProjectPage() {
               {timeline.trace.caption_segments?.length ? timeline.trace.caption_segments.map((caption, index) => (
                 <span key={`${caption.start}-${index}`}>{formatDuration(caption.start)}–{formatDuration(caption.end)} · {caption.text}</span>
               )) : <span className="muted">{timeline.trace.caption_error ? `Caption request failed: ${timeline.trace.caption_error}` : timeline.trace.caption_state === 'no_speech_detected' ? 'Whisper ran; no speech segments were found.' : timeline.trace.caption_state === 'requested' ? 'Captions were requested; transcription is still pending.' : 'No rendered caption segments recorded for this timeline.'}</span>}
+              {Boolean(timeline.trace.unsupported_effects?.length) && <>
+                <strong>Unavailable from this footage or local renderer</strong>
+                {timeline.trace.unsupported_effects?.map((effect) => <span key={effect.effect}>
+                  {effect.effect.replace(/_/g, ' ')} · {effect.reason}
+                </span>)}
+              </>}
             </div>
           </div>
         ) : timelineUnavailable ? (
@@ -588,7 +879,7 @@ export default function ProjectPage() {
         ) : <div className="empty" role="status">Loading the saved edit plan…</div>}
       </section>
 
-      <section className="section">
+      <section className="section" id="create-area">
         <div className="section-head">
           <h2>Upload footage</h2>
           {rejected > 0 && <span className="hint">{rejected} rejected — reasons shown in the table below</span>}
@@ -602,10 +893,8 @@ export default function ProjectPage() {
         />
       </section>
 
-      <section className="section">
-        <div className="section-head">
-          <h2>Summary</h2>
-        </div>
+      <details className="section">
+        <summary>Advanced · project diagnostics</summary>
         <div className="grid cols-3">
           <div className="card stat">
             <div className="label">Usable clips</div>
@@ -628,8 +917,8 @@ export default function ProjectPage() {
           </div>
           <div className="card stat">
             <div className="label">Heuristic plan score</div>
-            <div className="value">{project.story_score != null ? project.story_score.toFixed(2) : '—'}</div>
-            <div className="foot">rule-based estimate, not a human quality rating</div>
+            <div className="value">{!timeline?.trace.manual_timeline_applied && project.story_score != null ? project.story_score.toFixed(2) : '—'}</div>
+            <div className="foot">{timeline?.trace.manual_timeline_applied ? 'Manual timeline not scored' : 'rule-based estimate, not a human quality rating'}</div>
           </div>
           <div className="card stat">
             <div className="label">Render</div>
@@ -644,13 +933,42 @@ export default function ProjectPage() {
             <div className="foot mono">{latestJob ? latestJob.id : 'never run'}</div>
           </div>
         </div>
-      </section>
+      </details>
 
       <section className="section" aria-labelledby="version-history-heading">
         <div className="section-head">
-          <h2 id="version-history-heading">Version history</h2>
-          <span className="hint">Each job keeps its prompt and editing options.</span>
+          <h2 id="version-history-heading">Compare versions</h2>
+          <span className="hint">Each version keeps its prompt, settings, and successful renders.</span>
         </div>
+        {versionChoices.length > 0 && <div className="card">
+          <div className="row">
+            <label>Version A <select aria-label="Compare version A" value={compareVersionA || String(project.prompt_version)}
+              onChange={(event) => setCompareVersionA(event.target.value)}>
+              {versionChoices.map((version) => <option key={version} value={version}>Version {version}</option>)}
+            </select></label>
+            <label>Version B <select aria-label="Compare version B" value={compareVersionB || String(Math.max(1, project.prompt_version - 1))}
+              onChange={(event) => setCompareVersionB(event.target.value)}>
+              {versionChoices.map((version) => <option key={version} value={version}>Version {version}</option>)}
+            </select></label>
+          </div>
+          <div className="grid cols-2" style={{ marginTop: 12 }}>
+            {[selectedA, selectedB].map((job, index) => <div key={index}>
+              <strong>{index === 0 ? 'A' : 'B'} · {job ? `v${job.prompt_version} · ${job.state}` : 'Unavailable'}</strong>
+              <p className="muted" style={{ marginTop: 6 }}>{job?.prompt_snapshot ?? 'No saved prompt.'}</p>
+              <small className="muted">{job?.edit_options_snapshot?.manual_timeline ? 'Manual timeline' : 'AI timeline'} · {job?.target_platform_snapshot ?? '—'}</small>
+              {(() => { const render = renders.find((candidate) => candidate.preview_url && project.jobs.some(
+                (versionJob) => versionJob.id === candidate.job_id && versionJob.prompt_version === job?.prompt_version));
+                return render?.preview_url ? <><video className="render-video" controls preload="metadata"
+                  aria-label={`${index === 0 ? 'A' : 'B'} version preview`} src={mediaUrl(render.preview_url)}
+                  style={{ marginTop: 10, maxHeight: 340 }} /><small className="muted">Saved successful render</small></>
+                  : <p className="muted">No successful render for this version.</p>;
+              })()}
+            </div>)}
+          </div>
+          {selectedA && selectedB && <p className="settings-diff"><strong>Settings changed:</strong>{' '}
+            {changedSettings(selectedB.edit_options_snapshot, selectedA.edit_options_snapshot).join(' · ') || 'none'}</p>}
+        </div>}
+        <details style={{ marginTop: 12 }}><summary>All jobs and retry details ({project.jobs.length})</summary>
         {project.jobs.length ? (
           <div className="grid">
             {project.jobs.map((job) => {
@@ -702,6 +1020,7 @@ export default function ProjectPage() {
             })}
           </div>
         ) : <div className="empty">No processing jobs yet.</div>}
+        </details>
       </section>
 
       <section className="section" aria-labelledby="render-heading">
@@ -776,7 +1095,8 @@ export default function ProjectPage() {
       </section>
 
       {project.quota.length > 0 && (
-        <section className="section">
+        <details className="section">
+          <summary>Advanced · upload quotas</summary>
           <div className="section-head">
             <h2>Quota</h2>
             <span className="hint">per resolution class, enforced on upload</span>
@@ -800,7 +1120,7 @@ export default function ProjectPage() {
               </div>
             ))}
           </div>
-        </section>
+        </details>
       )}
 
       <section className="section">
@@ -825,15 +1145,12 @@ export default function ProjectPage() {
         <ClipTable clips={project.clips} onDelete={(id) => void removeClip(id)} busy={busy || running} />
       </section>
 
-      <section className="section">
-        <div className="section-head">
-          <h2>Activity</h2>
-          <span className="hint">{feed.length} events</span>
-        </div>
+      <details className="section">
+        <summary>Advanced · pipeline events ({feed.length})</summary>
         <div className="card">
           <ProgressFeed events={currentJobFeed} />
         </div>
-      </section>
+      </details>
     </div>
   );
 }
@@ -885,8 +1202,10 @@ function changedSettings(previous: EditOptions | null | undefined, current: Edit
     'target_duration_s', 'aspect_ratio', 'color_grade', 'style_preset', 'pace', 'transition',
     'transition_duration_ms', 'scale_mode', 'brightness', 'contrast', 'saturation', 'gamma',
     'shadow_coolness', 'highlight_warmth', 'vignette', 'music_style', 'add_music', 'caption_style',
+    'manual_timeline',
   ];
-  return keys.filter((key) => (previous[key] ?? null) !== (current[key] ?? null)).map((key) => String(key).replace(/_/g, ' '));
+  return keys.filter((key) => JSON.stringify(previous[key] ?? null) !== JSON.stringify(current[key] ?? null))
+    .map((key) => String(key).replace(/_/g, ' '));
 }
 
 /** Same event can arrive from the REST replay and the socket; key on time+stage+clip. */

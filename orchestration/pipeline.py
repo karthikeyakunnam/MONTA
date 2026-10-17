@@ -192,7 +192,8 @@ class MontaPipeline:
                   target_platform: str | None = None, edit_options: dict | None = None,
                   cached_context: ContextPack | None = None,
                   reuse_story_plan: StoryPlan | None = None,
-                  revision_base_intent: IntentAnalysis | None = None) -> PipelineResult:
+                  revision_base_intent: IntentAnalysis | None = None,
+                  manual_timeline_override: bool = False) -> PipelineResult:
         """End-to-end Layers 3–7 under one trace (trace_id / request_id / project_id / hashed user)."""
         with new_trace(project_id=project_id, user_id=user_id), span("pipeline.run", clips=len(clips), prompt_chars=len(prompt)) as sp:
             outcome = "error"
@@ -200,7 +201,8 @@ class MontaPipeline:
                 result = await self._run(project_id=project_id, user_id=user_id, prompt=prompt, clips=clips,
                                          target_platform=target_platform, edit_options=edit_options or {},
                                          cached_context=cached_context, reuse_story_plan=reuse_story_plan,
-                                         revision_base_intent=revision_base_intent)
+                                         revision_base_intent=revision_base_intent,
+                                         manual_timeline_override=manual_timeline_override)
                 outcome = result.report.status if result.story else "no_story"
                 sp.set(outcome=outcome, pattern=result.story.story_pattern if result.story else None)
                 return result
@@ -224,7 +226,8 @@ class MontaPipeline:
                    target_platform: str | None = None, edit_options: dict | None = None,
                    cached_context: ContextPack | None = None,
                    reuse_story_plan: StoryPlan | None = None,
-                   revision_base_intent: IntentAnalysis | None = None) -> PipelineResult:
+                   revision_base_intent: IntentAnalysis | None = None,
+                   manual_timeline_override: bool = False) -> PipelineResult:
         if not clips:
             raise PipelineError("at least one clip is required")
         intent = await self._stage("interpret", self.interpret(prompt))
@@ -254,7 +257,7 @@ class MontaPipeline:
             reconciled = self.intent_engine.reconcile_with_footage(pack.intent, list(analyzed.values()))
             pack = await self.composer.enrich_with_footage(pack, reconciled, analyzed)
             validation = self.validator.validate_plan(reuse_story_plan, pack.clip_intelligence)
-            if not validation.passed:
+            if not validation.passed and not manual_timeline_override:
                 details = "; ".join(
                     violation.message for violation in validation.violations if violation.severity == "error"
                 )
@@ -266,10 +269,14 @@ class MontaPipeline:
                 results=tuple(TaskResult(
                     task_id=task.task_id, agent=task.agent, status=TaskStatus.SKIPPED, attempts=0,
                     duration_ms=0.0,
-                    reasoning="Reused the last successful, validated story plan; only render-level settings changed.",
+                    reasoning=("Reused prior story only as a metadata base; the user timeline is separately validated."
+                               if manual_timeline_override else
+                               "Reused the last successful, validated story plan; only render-level settings changed."),
                 ) for task in plan.execution_plan),
                 duration_ms=0.0,
-                reasoning="Clip analysis and story selection were reused; timeline, audio, and render are rebuilt.",
+                reasoning=("User shot overrides replace the prior story cuts after IR construction."
+                           if manual_timeline_override else
+                           "Clip analysis and story selection were reused; timeline, audio, and render are rebuilt."),
             )
             return PipelineResult(
                 intent=pack.intent, context_pack=pack, plan=plan, report=report,
@@ -290,6 +297,34 @@ class MontaPipeline:
             verdict = await self.judge.judge(plan, pack)
         m.JUDGE_SCORE.observe(verdict.overall_score, judge=self.judge.judge_id)
         return verdict
+
+    def manual_revision_from_cached(self, cached: ContextPack, story: StoryPlan,
+                                    clips: Sequence[ClipSource], target_platform: str | None,
+                                    edit_options: dict) -> PipelineResult:
+        """Reuse immutable upload analysis for a same-prompt manual edit.
+
+        The saved AI story supplies metadata and text requirements; user shots
+        replace its cuts after Timeline IR construction and are validated there.
+        """
+        paths = {clip.clip_id: clip.path for clip in clips}
+        if paths.keys() != {meta.clip_id for meta in cached.video_metadata}:
+            raise PipelineError("manual edit source clips changed; analyze the project again")
+        intent = _apply_project_options(cached.intent, target_platform, edit_options)
+        pack = revalidate(cached, intent=intent, video_metadata=tuple(
+            revalidate(meta, path=paths[meta.clip_id]) for meta in cached.video_metadata
+        ))
+        plan = self.director.plan(pack)
+        report = ExecutionReport(
+            plan_id=plan.plan_id, status="degraded",
+            results=tuple(TaskResult(task_id=task.task_id, agent=task.agent,
+                                     status=TaskStatus.SKIPPED, attempts=0, duration_ms=0.0,
+                                     reasoning="Saved analysis reused for a manual timeline revision.")
+                          for task in plan.execution_plan),
+            duration_ms=0.0,
+            reasoning="Saved clip analysis and brief reused; user shots replace AI cuts and are validated before FFmpeg.",
+        )
+        return PipelineResult(intent=intent, context_pack=pack, plan=plan, report=report,
+                              story=story, validation=story.validation, probe_failures=())
 
     async def redesign_story(self, pack: ContextPack, *, avoid_patterns: Sequence[str]) -> tuple[StoryPlan, ValidationReport]:
         """Critic retry path: rebuild the story from the same ContextPack, excluding rejected patterns."""
@@ -407,6 +442,7 @@ class MontaPipeline:
 def _apply_project_options(intent: IntentAnalysis, target_platform: str | None, options: dict) -> IntentAnalysis:
     """Apply explicit project form choices after prompt inference, with visible provenance."""
     from shared.contracts.explain import Evidence, Explained
+    from shared.contracts.intent import CreativeDirective
     from shared.contracts.vocab import CaptionStyle, ColorGrade, MusicStyle, Pace, Platform
 
     value_types = {
@@ -421,6 +457,23 @@ def _apply_project_options(intent: IntentAnalysis, target_platform: str | None, 
         selected["target_platform"] = target_platform
     field_names = {"target_platform", "color_grade", "caption_style", "music_style", "target_duration_s", "pace"}
     payload = intent.model_dump(mode="python")
+    categories = {
+        "target_platform": "aspect", "aspect_ratio": "aspect", "target_duration_s": "duration",
+        "color_grade": "color", "brightness": "color", "contrast": "color",
+        "saturation": "color", "gamma": "color", "shadow_coolness": "color",
+        "highlight_warmth": "color", "vignette": "color", "scale_mode": "framing",
+        "pace": "narrative", "transition": "transition", "transition_duration_ms": "transition",
+        "music_style": "audio", "caption_style": "text", "manual_timeline": "source",
+    }
+    prior_directives = [item for item in intent.creative_brief.directives
+                        if item.origin != "explicit_setting"]
+    explicit_directives = [CreativeDirective(
+        category=categories[name], priority="required",
+        value="manual shot order and ranges" if name == "manual_timeline" else f"{name}={raw_value}",
+        source_span=name, origin="explicit_setting",
+    ) for name, raw_value in selected.items()
+        if name in categories and raw_value is not None]
+    payload["creative_brief"]["directives"] = tuple(prior_directives + explicit_directives)
     for name, raw_value in selected.items():
         if name not in field_names or raw_value is None:
             continue

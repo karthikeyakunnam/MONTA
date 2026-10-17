@@ -109,6 +109,50 @@ async def test_revision_keeps_project_uploads_options_and_previous_render(
 
 
 @pytest.mark.asyncio
+async def test_manual_revision_validates_sources_and_preserves_prior_render(
+    harness: AppHarness, media: MediaFixtures,
+) -> None:
+    project = await _project_with_clip(harness, media)
+    initial = await harness.client.post(f"/projects/{project['id']}/pipeline")
+    assert initial.status_code == 202
+    prior_render = await _seed_successful_render(harness, project["id"], initial.json()["job_id"])
+    detail = (await harness.client.get(f"/projects/{project['id']}")).json()
+    clip = detail["clips"][0]
+    edit = {"shots": [{"clip_id": clip["id"], "source_in_ms": 0, "source_out_ms": 1000,
+                       "transition_in": "cut", "transition_in_ms": 0, "volume": 0.5}],
+            "captions": [{"start": 0.1, "end": 0.8, "text": "Edited words"}]}
+    payload = {"prompt": detail["raw_prompt"], "target_platform": detail["target_platform"],
+               "edit_options": {"add_music": False, "caption_style": "Minimal", "manual_timeline": edit},
+               "expected_prompt_version": detail["prompt_version"], "idempotency_key": "manual-revision-001"}
+    bad = await harness.client.post(f"/projects/{project['id']}/revisions", json={
+        **payload, "edit_options": {"manual_timeline": {"shots": [
+            {"clip_id": "unowned", "source_in_ms": 0, "source_out_ms": 1000}]}},
+        "idempotency_key": "manual-revision-bad",
+    })
+    assert bad.status_code == 409
+    stale = await harness.client.post(f"/projects/{project['id']}/revisions", json={
+        **payload, "expected_prompt_version": 99, "idempotency_key": "manual-revision-stale",
+    })
+    assert stale.status_code == 409
+    bad_caption = await harness.client.post(f"/projects/{project['id']}/revisions", json={
+        **payload, "edit_options": {"caption_style": "Minimal", "manual_timeline": {
+            **edit, "captions": [{"start": 0.5, "end": 1.5, "text": "Too late"}]}},
+        "idempotency_key": "manual-caption-bad",
+    })
+    assert bad_caption.status_code == 409
+    accepted = await harness.client.post(f"/projects/{project['id']}/revisions", json=payload)
+    assert accepted.status_code == 202, accepted.text
+    updated = (await harness.client.get(f"/projects/{project['id']}")).json()
+    stored = updated["edit_options"]["manual_timeline"]
+    assert stored["shots"][0]["clip_id"] == clip["id"]
+    assert stored["shots"][0]["source_out_ms"] == 1000
+    assert stored["shots"][0]["volume"] == 0.5
+    assert stored["captions"] == edit["captions"]
+    assert updated["jobs"][0]["edit_options_snapshot"]["manual_timeline"] == stored
+    assert updated["render_url"] == f"/api/v1/render/{prior_render}/download"
+
+
+@pytest.mark.asyncio
 async def test_clip_preview_serves_only_owned_project_uploads(harness: AppHarness, media: MediaFixtures) -> None:
     project = await _project_with_clip(harness, media)
     detail = (await harness.client.get(f"/projects/{project['id']}")).json()

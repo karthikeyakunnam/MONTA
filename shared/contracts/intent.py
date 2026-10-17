@@ -73,6 +73,19 @@ class TextOverlayRequirement(BaseModel):
         return self
 
 
+class CreativeDirective(BaseModel):
+    """A prompt or setting instruction with explicit priority and provenance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    category: Literal["visual", "narrative", "text", "color", "framing", "motion",
+                      "transition", "audio", "duration", "aspect", "source"]
+    priority: Literal["required", "preferred", "optional"]
+    value: NonEmptyText
+    source_span: NonEmptyText
+    origin: Literal["prompt", "explicit_setting"] = "prompt"
+
+
 class CreativeBrief(BaseModel):
     """Keep visual treatment, emotional goals, and energy direction as separate axes."""
 
@@ -82,6 +95,7 @@ class CreativeBrief(BaseModel):
     emotional_tones: tuple[Emotion, ...] = ()
     energy_trajectory: Literal["rising", "steady", "falling"] | None = None
     text_overlays: tuple[TextOverlayRequirement, ...] = ()
+    directives: tuple[CreativeDirective, ...] = ()
     evidence: tuple[str, ...] = ()
     visual_confidence: float = Field(0.0, ge=0.0, le=1.0)
     emotion_confidence: float = Field(0.0, ge=0.0, le=1.0)

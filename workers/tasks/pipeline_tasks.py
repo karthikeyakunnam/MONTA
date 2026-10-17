@@ -259,10 +259,19 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     publish(Stage.STORY_BUILDING, "Building the story")
 
             pipeline.director.executor._on_event = on_event
-            result = await pipeline.run(project_id=project_id, user_id=user_id, prompt=prompt, clips=sources,
-                                        target_platform=target_platform, edit_options=edit_options,
-                                        cached_context=cached_context, reuse_story_plan=reuse_story,
-                                        revision_base_intent=revision_base_intent)
+            if (edit_options.get("manual_timeline") and cached_context and reuse_story
+                    and previous_success and previous_success.prompt_snapshot == prompt
+                    and previous_success.target_platform_snapshot == target_platform):
+                publish(Stage.STORY_BUILDING, "Reusing analyzed footage for manual timeline edit")
+                result = pipeline.manual_revision_from_cached(
+                    cached_context, reuse_story, sources, target_platform, edit_options,
+                )
+            else:
+                result = await pipeline.run(project_id=project_id, user_id=user_id, prompt=prompt, clips=sources,
+                                            target_platform=target_platform, edit_options=edit_options,
+                                            cached_context=cached_context, reuse_story_plan=reuse_story,
+                                            revision_base_intent=revision_base_intent,
+                                            manual_timeline_override=bool(edit_options.get("manual_timeline")))
 
             async with session_maker() as db:
                 project = await db.get(Project, project_id)
@@ -456,6 +465,26 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 except Exception as critic_err:
                     logger.warning("Critic evaluation skipped: %s", critic_err)
 
+                if edit_options.get("manual_timeline"):
+                    from services.timeline_generator.manual import ManualTimeline, apply_manual_timeline
+                    metadata = {item.clip_id: item for item in result.context_pack.video_metadata}
+                    manual_edit = ManualTimeline.model_validate(edit_options["manual_timeline"])
+                    window_crops = {}
+                    for index, shot in enumerate(manual_edit.shots):
+                        meta = metadata.get(shot.clip_id)
+                        if meta is not None:
+                            window_crops[index] = meta.content_crop or await pipeline.media.detect_content_crop_for_window(
+                                meta, shot.source_in_ms / 1000, shot.source_out_ms / 1000,
+                            )
+                    timeline_ir = apply_manual_timeline(
+                        timeline_ir,
+                        manual_edit,
+                        {clip_id: round(item.duration_s * 1000) for clip_id, item in metadata.items()},
+                        {clip_id: (item.path, item.has_audio, item.content_crop)
+                         for clip_id, item in metadata.items()},
+                        window_crops=window_crops,
+                    )
+
                 render_dir = settings.storage_root_path / "renders" / project_id
                 render_dir.mkdir(parents=True, exist_ok=True)
                 overlays, grain_strength, unavailable_effects = _materialize_prompt_visuals(
@@ -463,6 +492,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     timeline_ir.total_duration_ms,
                     render_dir,
                     job_id,
+                    timeline_ir.width,
+                    timeline_ir.height,
                 )
                 timeline_ir = revalidate(
                     timeline_ir,
@@ -484,6 +515,16 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     "creative_brief": result.context_pack.intent.creative_brief.model_dump(mode="json"),
                     "rendered_text_overlays": [overlay.model_dump(mode="json") for overlay in overlays],
                     "grain_strength": grain_strength,
+                    "manual_timeline_applied": bool(edit_options.get("manual_timeline")),
+                    "shot_decisions": [
+                        {"clip_id": cut.clip_id, "reason": cut.reasoning,
+                         "origin": "ai_inference"}
+                        for cut in active_story.timeline
+                    ] if not edit_options.get("manual_timeline") else [
+                        {"clip_id": segment.clip_id, "reason": "User selected or adjusted this shot.",
+                         "origin": "user_override"}
+                        for segment in timeline_ir.video_segments
+                    ],
                     "unsupported_effects": unavailable_effects,
                     "timeline_validation": {"is_valid": True, "errors": [], "warnings": []},
                     "critic_evaluation": critic_verdict,
@@ -531,13 +572,17 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 if caption_style is None:
                     inferred_caption = result.context_pack.intent.caption_style
                     caption_style = inferred_caption.value.value if inferred_caption and inferred_caption.value else "None"
-                if caption_style and caption_style != "None":
+                manual_captions = (edit_options.get("manual_timeline") or {}).get("captions")
+                if manual_captions and caption_style == "None":
+                    raise ValueError("Manual captions require a caption style; select one in Revise edit")
+                if manual_captions is not None or (caption_style and caption_style != "None"):
                     timeline_row.style_config = {
                         **(timeline_row.style_config or {}),
                         "caption_state": "requested",
                     }
                     await db.commit()
-                    publish(Stage.RENDERING, "Transcribing speech and burning captions with local Whisper")
+                    publish(Stage.RENDERING, "Burning edited captions" if manual_captions is not None
+                            else "Transcribing speech and burning captions with local Whisper")
                     try:
                         from services.edit_executor.caption_engine import CaptionEngine
                         from services.render_farm.output_validator import OutputValidator
@@ -547,14 +592,15 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             ffmpeg_bin=settings.FFMPEG_PATH,
                             temp_dir=str(render_dir),
                         )
-                        captions = await caption_engine.transcribe(str(render_file))
+                        captions = manual_captions if manual_captions is not None else await caption_engine.transcribe(str(render_file))
                         timeline_row.style_config = {
                             **(timeline_row.style_config or {}),
                             "caption_segments": [
                                 {"start": segment["start"], "end": segment["end"], "text": segment["text"]}
                                 for segment in captions
                             ],
-                            "caption_state": "transcribed" if captions else "no_speech_detected",
+                            "caption_state": ("user_edited" if captions else "user_removed")
+                            if manual_captions is not None else ("transcribed" if captions else "no_speech_detected"),
                         }
                         if captions:
                             caption_file = render_dir / f"captioned_{job_id}.mp4"
@@ -857,7 +903,8 @@ def _resolved_music_style(context_pack, style_override: dict) -> str | None:
     return StyleMapper.resolve_style_for_pack(context_pack, style_override).get("music")
 
 
-def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str):
+def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str,
+                                width: int = 1080, height: int = 1920):
     """Rasterize exact prompt text and return compiler-ready overlays plus honest effect status."""
     from services.edit_executor.text_overlay import render_text_overlay_asset
     from shared.contracts.timeline import TextOverlayIR
@@ -890,7 +937,7 @@ def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str
 
         overlay_id = f"text-{index:02d}-{requirement.role}"
         asset_path = render_dir / f"overlay_{job_id}_{index:02d}.png"
-        render_text_overlay_asset(requirement, 1080, 1920, asset_path)
+        render_text_overlay_asset(requirement, width, height, asset_path)
         overlays.append(TextOverlayIR(
             overlay_id=overlay_id,
             role=requirement.role,

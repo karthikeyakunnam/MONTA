@@ -108,8 +108,10 @@ class StoryToTimelineTranslator:
                 raise ValueError(f"StoryPlan cut {cut.index} has an invalid source or output range")
 
             trans_type, trans_ms = cls._transition_for(resolved_style, i, output_duration_ms)
-            fade_in_ms = 250 if i == 0 else 0
-            fade_out_ms = 250 if i == len(story.timeline) - 1 else 0
+            # The source image should be visible on frame one. A default fade
+            # introduces black frames even when the brief does not request one.
+            fade_in_ms = 0
+            fade_out_ms = 0
 
             segment_color = color_adj
             brief = pack.intent.creative_brief

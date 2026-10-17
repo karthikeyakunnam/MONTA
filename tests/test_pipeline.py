@@ -13,6 +13,7 @@ from orchestration.pipeline import _apply_project_options
 from services.context_composer import ContextComposer
 from services.prompt_engine import IntentEngine
 from shared.contracts.clip import ClipSource
+from shared.contracts.base import revalidate
 from shared.contracts.director import TaskStatus
 from shared.contracts.evaluation import StoryAttempt, StoryJudgement
 from shared.contracts.story import StoryPlan
@@ -105,6 +106,37 @@ async def test_render_only_revision_reuses_analysis_and_revalidates_story():
     assert "timeline, audio, and render are rebuilt" in revised.report.reasoning
 
 
+async def test_manual_shot_override_does_not_depend_on_prior_ai_cut_validation(monkeypatch):
+    media = SyntheticMediaBackend({cid: prof for cid, (prof, _) in GYM.items()})
+    pipeline = build(media)
+    first = await pipeline.run(project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM))
+    invalid = revalidate(first.validation, passed=False, summary="prior AI cut pacing no longer passes")
+    monkeypatch.setattr(pipeline.validator, "validate_plan", lambda *_args, **_kwargs: invalid)
+    with pytest.raises(PipelineError, match="reused story plan failed revalidation"):
+        await pipeline.run(project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM),
+                           cached_context=first.context_pack, reuse_story_plan=first.story)
+    manual = await pipeline.run(project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM),
+                                cached_context=first.context_pack, reuse_story_plan=first.story,
+                                manual_timeline_override=True)
+    assert manual.story == first.story
+    assert manual.validation is not None and not manual.validation.passed
+    assert "User shot overrides" in manual.report.reasoning
+
+
+async def test_same_prompt_manual_revision_uses_saved_analysis_without_new_ai(monkeypatch):
+    media = SyntheticMediaBackend({cid: prof for cid, (prof, _) in GYM.items()})
+    pipeline = build(media)
+    first = await pipeline.run(project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM))
+    monkeypatch.setattr(pipeline, "run", lambda **_kwargs: (_ for _ in ()).throw(
+        AssertionError("manual revision must not run AI analysis")))
+    manual = pipeline.manual_revision_from_cached(
+        first.context_pack, first.story, sources(GYM), "instagram", {"add_music": False},
+    )
+    assert manual.story == first.story
+    assert set(manual.context_pack.clip_intelligence) == set(GYM)
+    assert "user shots replace AI cuts" in manual.report.reasoning
+
+
 async def test_targeted_prompt_revision_preserves_base_intent_and_replans_the_story():
     media = SyntheticMediaBackend({cid: prof for cid, (prof, _) in GYM.items()})
     pipeline = build(media)
@@ -145,6 +177,12 @@ async def test_explicit_project_options_override_inferred_intent():
     assert updated.caption_style.value.value == "Minimal"
     assert updated.music_style.value.value == "lo-fi"
     assert all(e.source == "project_settings" for e in updated.target_platform.evidence)
+    explicit = [item for item in updated.creative_brief.directives if item.origin == "explicit_setting"]
+    assert {(item.category, item.value) for item in explicit} >= {
+        ("aspect", "target_platform=youtube"), ("duration", "target_duration_s=24"),
+        ("color", "color_grade=vibrant"),
+    }
+    assert all(item.priority == "required" for item in explicit)
 
 
 async def test_bad_clips_are_isolated():

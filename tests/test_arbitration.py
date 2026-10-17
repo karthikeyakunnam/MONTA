@@ -94,11 +94,12 @@ async def test_reliability_learned_from_calibration_outcomes():
 
 async def test_intent_engine_arbitrates_between_llms_and_records_rationale():
     def llm(pace, conf):
-        return json.dumps({"pace": {"value": pace, "confidence": conf, "reasoning": f"says {pace}"}})
+        return json.dumps({"pace": {"value": pace, "confidence": conf,
+                                    "reasoning": f"says {pace}", "evidence_span": pace}})
     qwen = ScriptedProvider([llm("fast", 0.9)], name="qwen", vision=False)
     gem = ScriptedProvider([llm("slow", 0.9)], name="gemini", vision=False)
     engine = IntentEngine([qwen, gem], reliability=trusted("gemini:test-model", "qwen:test-model", "pace"))
-    intent = await engine.analyze("make an edit")
+    intent = await engine.analyze("make a fast or slow edit")
     assert intent.pace.value == Pace.SLOW
     assert intent.arbitration is not None and intent.arbitration.models_succeeded == ("qwen:test-model", "gemini:test-model")
     assert any(r.field == "pace" for r in intent.arbitration.records)
