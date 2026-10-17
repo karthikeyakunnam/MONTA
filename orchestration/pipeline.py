@@ -463,7 +463,8 @@ def _apply_project_options(intent: IntentAnalysis, target_platform: str | None, 
         "saturation": "color", "gamma": "color", "shadow_coolness": "color",
         "highlight_warmth": "color", "vignette": "color", "scale_mode": "framing",
         "pace": "narrative", "transition": "transition", "transition_duration_ms": "transition",
-        "music_style": "audio", "caption_style": "text", "manual_timeline": "source",
+        "music_style": "audio", "caption_style": "text", "title_position": "text",
+        "manual_timeline": "source",
     }
     prior_directives = [item for item in intent.creative_brief.directives
                         if item.origin != "explicit_setting"]

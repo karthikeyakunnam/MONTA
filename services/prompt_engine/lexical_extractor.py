@@ -518,11 +518,27 @@ class LexicalIntentExtractor:
     def _text_overlay_requirements(prompt: str) -> tuple[TextOverlayRequirement, ...]:
         requirements: list[TextOverlayRequirement] = []
         seen: dict[tuple[str, str], int] = {}
+        def opening_end_s(after: int) -> float | None:
+            sentence = re.split(r"[.!?\n]", prompt[after:], maxsplit=1)[0]
+            timing = re.search(
+                r"\bfor\s+(?:the\s+)?(?:opening|first)\s+"
+                r"(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:seconds?|s)\b",
+                sentence, re.IGNORECASE,
+            )
+            if not timing:
+                return None
+            word = timing.group(1).casefold()
+            return float({"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                          "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}.get(word, word))
+
         pattern = r'''"([^"\n]{1,200})"|'([^'\n]{1,200})'|\u201c([^\u201d\n]{1,200})\u201d'''
+        previous_quote_end = 0
         for match in re.finditer(pattern, prompt):
             text = next(group for group in match.groups() if group is not None).strip()
             sentence_start = max(prompt.rfind(mark, 0, match.start()) for mark in ".!?\n") + 1
             context = prompt[sentence_start:match.start()].casefold()
+            local_context = prompt[max(sentence_start, previous_quote_end):match.start()].casefold()
+            previous_quote_end = match.end()
             classification = f"{context} {text.casefold()}"
             if re.search(r"\b(cinematography by|shot on|credits?)\b", classification):
                 role = "credit"
@@ -536,20 +552,20 @@ class LexicalIntentExtractor:
                 continue
 
             position = None
-            if role == "title" and re.search(r"\b(centered|center)\b", context):
+            if role == "title" and re.search(r"\b(centered|center)\b", local_context):
                 position = "center"
-            elif role == "subtitle" and re.search(r"\b(underneath|below)\b", context):
+            elif role == "subtitle" and re.search(r"\b(underneath|below)\b", local_context):
                 position = "below_title"
-            color = "magenta" if re.search(r"\b(magenta|pink)\b", context) else (
-                "white" if re.search(r"\bwhite\b", context) else None
+            color = "magenta" if re.search(r"\b(magenta|pink)\b", local_context) else (
+                "white" if re.search(r"\bwhite\b", local_context) else None
             )
-            font_family = "sans_serif" if re.search(r"\b(sans[- ]serif|sans)\b", context) else (
-                "serif" if re.search(r"\bserif\b", context) else None
+            font_family = "sans_serif" if re.search(r"\b(sans[- ]serif|sans)\b", local_context) else (
+                "serif" if re.search(r"\bserif\b", local_context) else None
             )
-            wide_tracking = True if re.search(r"\b(tracking|wide[- ]letter[- ]spacing)\b", context) else None
-            glow = True if re.search(r"\b(neon|glow|glowing)\b", context) else None
-            bold = True if re.search(r"\b(bold|heavy|strong)\b", context) else None
-            background = "dark_card" if re.search(r"\b(textured dark backdrop|dark backdrop|black background)\b", context) else None
+            wide_tracking = True if re.search(r"\b(tracking|wide[- ]letter[- ]spacing)\b", local_context) else None
+            glow = True if re.search(r"\b(neon|glow|glowing)\b", local_context) else None
+            bold = True if re.search(r"\b(bold|heavy|strong)\b", local_context) else None
+            background = "dark_card" if re.search(r"\b(textured dark backdrop|dark backdrop|black background)\b", local_context) else None
 
             key = (role, text)
             previous_index = seen.get(key)
@@ -559,7 +575,7 @@ class LexicalIntentExtractor:
                     role=role, text=text, source_span=match.group(0), position=position,
                     color=color, font_family=font_family, wide_tracking=wide_tracking,
                     glow=glow, bold=bold,
-                    background=background,
+                    background=background, end_s=opening_end_s(match.end()),
                 ))
                 continue
 
@@ -576,6 +592,26 @@ class LexicalIntentExtractor:
                 bold=previous.bold if previous.bold is not None else bold,
                 background=previous.background or background,
             )
+        # A direct "title reading NAME for the opening N seconds" instruction is
+        # unambiguous even without quotation marks. Keep the captured text short
+        # and stop at the timing clause; never infer titles from arbitrary prose.
+        unquoted = re.compile(
+            r"\btitle\s+reading\s+(?P<text>[^.!?\n]{1,100}?)"
+            r"(?=\s+for\s+(?:the\s+)?(?:opening|first)\s+|[.!?\n]|$)",
+            re.IGNORECASE,
+        )
+        for match in unquoted.finditer(prompt):
+            title = match.group("text").strip(" \t,;:\"'\u201c\u201d")
+            if not title or ("title", title) in seen:
+                continue
+            sentence_start = max(prompt.rfind(mark, 0, match.start()) for mark in ".!?\n") + 1
+            context = prompt[sentence_start:match.start()].casefold()
+            seen[("title", title)] = len(requirements)
+            requirements.append(TextOverlayRequirement(
+                role="title", text=title, source_span=match.group(0),
+                color="white" if re.search(r"\bwhite\b", context) else None,
+                end_s=opening_end_s(match.end()),
+            ))
         return tuple(requirements)
 
     @staticmethod

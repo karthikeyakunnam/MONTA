@@ -74,6 +74,8 @@ function optionsForRevision(options: EditOptions): EditOptions {
     shadow_coolness: options.shadow_coolness ?? null,
     highlight_warmth: options.highlight_warmth ?? null,
     vignette: options.vignette ?? null,
+    title_position: options.title_position ?? null,
+    include_prior_exports: options.include_prior_exports ?? false,
     manual_timeline: options.manual_timeline ?? null,
   };
 }
@@ -110,6 +112,8 @@ export default function ProjectPage() {
     add_music: true, aspect_ratio: null, style_preset: null, pace: null, transition: null,
     transition_duration_ms: null, scale_mode: null, brightness: null, contrast: null,
     saturation: null, gamma: null, shadow_coolness: null, highlight_warmth: null, vignette: null,
+    title_position: null,
+    include_prior_exports: false,
   });
 
   const refresh = useCallback(async () => {
@@ -366,6 +370,8 @@ export default function ProjectPage() {
     style_preset: null, pace: null, transition: null, transition_duration_ms: null,
     scale_mode: null, brightness: null, contrast: null, saturation: null, gamma: null,
     shadow_coolness: null, highlight_warmth: null, vignette: null,
+    title_position: null,
+    include_prior_exports: false,
   };
   // Keep the page usable while rolling out the additive render-history schema to
   // a previously running API instance that still returns the older detail shape.
@@ -495,6 +501,23 @@ export default function ProjectPage() {
                     <option value="">Infer from prompt</option>
                     {COLOR_GRADES.map((style) => <option key={style} value={style}>{style.replace('_', ' ')}</option>)}
                   </select>
+                </label>
+                <label className="field">
+                  <span>Title placement</span>
+                  <select value={revisionOptions.title_position ?? ''} onChange={(event) => setRevisionOptions((current) => ({
+                    ...current, title_position: (event.target.value || null) as 'center' | 'lower_third' | null,
+                  }))}>
+                    <option value="">Lower third in portrait (default)</option>
+                    <option value="lower_third">Lower third</option>
+                    <option value="center">Center</option>
+                  </select>
+                </label>
+                <label className="field">
+                  <span>Use prior MONTA exports as source clips</span>
+                  <input type="checkbox" checked={revisionOptions.include_prior_exports ?? false}
+                    onChange={(event) => setRevisionOptions((current) => ({
+                      ...current, include_prior_exports: event.target.checked,
+                    }))} />
                 </label>
                 <label className="field">
                   <span>Captions</span>
@@ -745,9 +768,9 @@ export default function ProjectPage() {
                   <label>Transition duration (ms)<input aria-label={`Shot ${index + 1} transition duration`} type="number"
                     min="0" max="2000" step="50" disabled={index === 0 || shot.transition_in === 'cut'}
                     value={shot.transition_in_ms} onChange={(event) => updateManualShot(index, { transition_in_ms: Number(event.target.value) })} /></label>
-                  <label>Fade in (ms)<input aria-label={`Shot ${index + 1} fade in`} type="number" min="0" max="2000" step="50"
+                  <label>Picture and audio fade in (ms)<input aria-label={`Shot ${index + 1} fade in`} type="number" min="0" max="2000" step="50"
                     value={shot.fade_in_ms ?? 0} onChange={(event) => updateManualShot(index, { fade_in_ms: Number(event.target.value) })} /></label>
-                  <label>Fade out (ms)<input aria-label={`Shot ${index + 1} fade out`} type="number" min="0" max="2000" step="50"
+                  <label>Picture and audio fade out (ms)<input aria-label={`Shot ${index + 1} fade out`} type="number" min="0" max="2000" step="50"
                     value={shot.fade_out_ms ?? 0} onChange={(event) => updateManualShot(index, { fade_out_ms: Number(event.target.value) })} /></label>
                   <label>Brightness<input aria-label={`Shot ${index + 1} brightness`} type="number" min="-1" max="1" step="0.05"
                     value={shot.color?.brightness ?? 0} onChange={(event) => updateManualShot(index, {
@@ -1201,7 +1224,8 @@ function changedSettings(previous: EditOptions | null | undefined, current: Edit
   const keys: Array<keyof EditOptions> = [
     'target_duration_s', 'aspect_ratio', 'color_grade', 'style_preset', 'pace', 'transition',
     'transition_duration_ms', 'scale_mode', 'brightness', 'contrast', 'saturation', 'gamma',
-    'shadow_coolness', 'highlight_warmth', 'vignette', 'music_style', 'add_music', 'caption_style',
+    'shadow_coolness', 'highlight_warmth', 'vignette', 'title_position', 'include_prior_exports',
+    'music_style', 'add_music', 'caption_style',
     'manual_timeline',
   ];
   return keys.filter((key) => JSON.stringify(previous[key] ?? null) !== JSON.stringify(current[key] ?? null))

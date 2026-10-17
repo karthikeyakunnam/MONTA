@@ -22,6 +22,7 @@ Design notes:
 import asyncio
 import logging
 import os
+import re
 from datetime import datetime, timezone
 
 from celery import Task
@@ -61,6 +62,15 @@ def _settings():
     from app.config import settings
 
     return settings
+
+
+def _select_auto_sources(clips, edit_options: dict):
+    """Avoid nesting prior MONTA exports in a fresh automatic edit when originals exist."""
+    if edit_options.get("manual_timeline") or edit_options.get("include_prior_exports"):
+        return list(clips)
+    originals = [clip for clip in clips if not re.fullmatch(
+        r"monta_edit_proj_[0-9a-f]{12}\.mp4", clip.original_filename or "", re.IGNORECASE)]
+    return originals or list(clips)
 
 
 async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
@@ -122,24 +132,27 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 job.attempts = (job.attempts or 0) + 1
                 job.started_at = datetime.now(timezone.utc)
                 project.status = ProjectStatus.ANALYZING.value
-                project.status_detail = f"analyzing {len(clips)} clips"
                 prompt = job.prompt_snapshot if job.prompt_snapshot is not None else (project.raw_prompt or "")
                 user_id = project.user_id
                 target_platform = job.target_platform_snapshot or project.target_platform
                 edit_options = dict(job.edit_options_snapshot or project.edit_options or {})
                 prompt_version = int(job.prompt_version or project.prompt_version or 1)
-                sources = [ClipSource(clip_id=c.id, path=str(_storage_path(settings, c.storage_key))) for c in clips]
+                analysis_clips = _select_auto_sources(clips, edit_options)
+                excluded_exports = [c.id for c in clips if c not in analysis_clips]
+                project.status_detail = f"analyzing {len(analysis_clips)} clips"
+                sources = [ClipSource(clip_id=c.id, path=str(_storage_path(settings, c.storage_key)))
+                           for c in analysis_clips]
 
                 cached_context = None
                 cache_reused = False
                 try:
                     candidate = ContextPack.model_validate(project.context) if project.context else None
-                    if candidate and {meta.clip_id for meta in candidate.video_metadata} == {c.id for c in clips}:
+                    if candidate and {meta.clip_id for meta in candidate.video_metadata} == {c.id for c in analysis_clips}:
                         from orchestration.agents.intelligence.media import fingerprint_file
                         metadata = {meta.clip_id: meta for meta in candidate.video_metadata}
                         cache_reused = all(
                             metadata[c.id].fingerprint == fingerprint_file(str(_storage_path(settings, c.storage_key)))
-                            for c in clips
+                            for c in analysis_clips
                         )
                         if cache_reused:
                             cached_context = candidate
@@ -487,13 +500,15 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
 
                 render_dir = settings.storage_root_path / "renders" / project_id
                 render_dir.mkdir(parents=True, exist_ok=True)
+                render_brief = _refresh_prompt_text_styles(result.context_pack.intent.creative_brief, prompt)
                 overlays, grain_strength, unavailable_effects = _materialize_prompt_visuals(
-                    result.context_pack.intent.creative_brief,
+                    render_brief,
                     timeline_ir.total_duration_ms,
                     render_dir,
                     job_id,
                     timeline_ir.width,
                     timeline_ir.height,
+                    title_position=edit_options.get("title_position"),
                 )
                 timeline_ir = revalidate(
                     timeline_ir,
@@ -512,10 +527,11 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     "edit_options": dict(edit_options),
                     "pace": active_story.pace.value.value,
                     "emotion": active_story.emotion.value.value,
-                    "creative_brief": result.context_pack.intent.creative_brief.model_dump(mode="json"),
+                    "creative_brief": render_brief.model_dump(mode="json"),
                     "rendered_text_overlays": [overlay.model_dump(mode="json") for overlay in overlays],
                     "grain_strength": grain_strength,
                     "manual_timeline_applied": bool(edit_options.get("manual_timeline")),
+                    "excluded_prior_exports": excluded_exports,
                     "shot_decisions": [
                         {"clip_id": cut.clip_id, "reason": cut.reasoning,
                          "origin": "ai_inference"}
@@ -903,18 +919,49 @@ def _resolved_music_style(context_pack, style_override: dict) -> str | None:
     return StyleMapper.resolve_style_for_pack(context_pack, style_override).get("music")
 
 
+def _refresh_prompt_text_styles(brief, prompt: str):
+    """Apply corrected prompt-local text styling to cached intent without losing timings."""
+    from services.prompt_engine.lexical_extractor import LexicalIntentExtractor
+    from shared.contracts.base import revalidate
+
+    parsed = LexicalIntentExtractor._text_overlay_requirements(prompt)
+    if not parsed:
+        return brief
+    by_key = {(item.role, item.text): item for item in parsed}
+    fields = ("position", "color", "font_family", "wide_tracking", "glow", "bold", "background")
+    overlays = []
+    existing_keys = set()
+    for existing in brief.text_overlays:
+        existing_keys.add((existing.role, existing.text))
+        fresh = by_key.get((existing.role, existing.text))
+        updates = {field: getattr(fresh, field) for field in fields
+                   if fresh is not None and getattr(fresh, field) is not None}
+        overlays.append(revalidate(existing, **updates) if updates else existing)
+    overlays.extend(item for item in parsed if (item.role, item.text) not in existing_keys)
+    return revalidate(brief, text_overlays=tuple(overlays))
+
+
 def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str,
-                                width: int = 1080, height: int = 1920):
+                                width: int = 1080, height: int = 1920,
+                                title_position: str | None = None):
     """Rasterize exact prompt text and return compiler-ready overlays plus honest effect status."""
     from services.edit_executor.text_overlay import render_text_overlay_asset
+    from shared.contracts.base import revalidate
     from shared.contracts.timeline import TextOverlayIR
 
     requirements = brief.text_overlays
     credits = [item for item in requirements if item.role == "credit"]
     credit_duration = min(2500, max(1000, duration_ms // max(2, len(credits) + 1))) if credits else 0
     overlays = []
+    chosen_title_position = title_position or ("lower_third" if height > width else "center")
 
     for index, requirement in enumerate(requirements):
+        if requirement.role == "title":
+            placed = revalidate(requirement, position=chosen_title_position)
+        elif requirement.role == "subtitle" and chosen_title_position == "lower_third":
+            placed = revalidate(requirement, position="bottom")
+        else:
+            placed = requirement
         if requirement.role == "title":
             default_start, default_end = 0, min(duration_ms, 4500)
         elif requirement.role == "subtitle":
@@ -937,7 +984,7 @@ def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str
 
         overlay_id = f"text-{index:02d}-{requirement.role}"
         asset_path = render_dir / f"overlay_{job_id}_{index:02d}.png"
-        render_text_overlay_asset(requirement, width, height, asset_path)
+        render_text_overlay_asset(placed, width, height, asset_path)
         overlays.append(TextOverlayIR(
             overlay_id=overlay_id,
             role=requirement.role,
@@ -946,7 +993,7 @@ def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str
             asset_path=str(asset_path),
             start_ms=start_ms,
             end_ms=end_ms,
-            position=requirement.position or {
+            position=placed.position or {
                 "title": "center", "subtitle": "below_title", "credit": "lower_third", "caption": "lower_third",
             }[requirement.role],
             color=requirement.color or ("magenta" if requirement.role == "title" else "white"),

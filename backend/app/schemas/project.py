@@ -38,6 +38,10 @@ class EditOptions(BaseModel):
     shadow_coolness: float | None = Field(None, ge=-1, le=1, exclude_if=lambda value: value is None)
     highlight_warmth: float | None = Field(None, ge=-1, le=1, exclude_if=lambda value: value is None)
     vignette: float | None = Field(None, ge=0, le=1, exclude_if=lambda value: value is None)
+    title_position: Literal["center", "lower_third"] | None = Field(
+        None, exclude_if=lambda value: value is None,
+    )
+    include_prior_exports: bool = Field(False, exclude_if=lambda value: value is False)
     caption_style: CaptionStyle | None = Field(None, exclude_if=lambda value: value is None)
     music_style: MusicStyle | None = Field(None, exclude_if=lambda value: value is None)
     add_music: bool = True

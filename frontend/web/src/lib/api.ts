@@ -127,6 +127,8 @@ export interface EditOptions {
   shadow_coolness?: number | null;
   highlight_warmth?: number | null;
   vignette?: number | null;
+  title_position?: 'center' | 'lower_third' | null;
+  include_prior_exports?: boolean;
   manual_timeline?: ManualTimeline | null;
 }
 
