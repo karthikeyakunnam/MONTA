@@ -131,7 +131,7 @@ async def test_observe_with_arbitration_compatibility():
 
 
 async def test_video_intelligence_team_integration():
-    vlm_provider = ScriptedProvider([SAMPLE_VLM_DESCRIPTION], vision=True)
+    vlm_provider = ScriptedProvider([SAMPLE_VLM_DESCRIPTION] * 8, vision=True)
     text_provider = ScriptedProvider([SAMPLE_STRUCTURED_JSON], vision=False)
     pipeline = LocalVisionPipeline(vlm_provider=vlm_provider, text_provider=text_provider)
 

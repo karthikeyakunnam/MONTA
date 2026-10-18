@@ -99,6 +99,16 @@ class RoleCandidate(BaseModel):
     confidence: float = Field(..., ge=0, le=1)
 
 
+class FrameEvidence(BaseModel):
+    """A timestamped model observation; the source frame remains the authority."""
+
+    model_config = ConfigDict(frozen=True)
+
+    time_s: float = Field(..., ge=0)
+    description: NonEmptyText
+    model_id: str = Field(..., min_length=1)
+
+
 class VisionObservation(BaseModel):
     """Semantic understanding returned by a multimodal provider (validated at the provider boundary)."""
 
@@ -306,6 +316,7 @@ class ClipIntelligence(BaseModel):
     scene_type: str = ""
     story_role_candidates: tuple[RoleCandidate, ...] = ()
     visual_tags: Labels = ()
+    frame_evidence: tuple[FrameEvidence, ...] = ()
     reasoning: NonEmptyText
 
     peak_time_s: float = Field(0.0, ge=0)

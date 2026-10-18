@@ -242,7 +242,11 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
             # Re-analyze just those clips when the real local vision stack is ready.
             if cached_context and pipeline.director.planner.vision_enabled:
                 vision_reanalysis_ids = [clip_id for clip_id, intelligence in cached_context.clip_intelligence.items()
-                                         if not intelligence.provenance.vision_model]
+                                         if not intelligence.provenance.vision_model
+                                         or (hasattr(pipeline.team.vision, "describe_frame")
+                                             and (not intelligence.frame_evidence
+                                                  or any("frame evidence" in note
+                                                         for note in intelligence.provenance.degraded)))]
                 if vision_reanalysis_ids:
                     retained = {clip_id: intelligence for clip_id, intelligence
                                 in cached_context.clip_intelligence.items()
@@ -284,7 +288,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                                             target_platform=target_platform, edit_options=edit_options,
                                             cached_context=cached_context, reuse_story_plan=reuse_story,
                                             revision_base_intent=revision_base_intent,
-                                            manual_timeline_override=bool(edit_options.get("manual_timeline")))
+                                            manual_timeline_override=bool(edit_options.get("manual_timeline")),
+                                            redesign_invalid_story=True)
 
             async with session_maker() as db:
                 project = await db.get(Project, project_id)
@@ -313,7 +318,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     "reused_clip_analysis_ids": sorted(reused_clip_analysis_ids),
                     "vision_reanalysis_ids": sorted(vision_reanalysis_ids),
                     "crop_probe_failures": crop_probe_failures,
-                    "reused_story_plan": reuse_story is not None,
+                    "reused_story_plan": reuse_story is not None and not result.story_reuse_rejected,
+                    "story_reuse_rejected_reason": result.story_reuse_rejected,
                 }
                 project.parsed_intent = intent
                 # Keep the complete ContextPack, including real source metadata and
@@ -533,16 +539,35 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     "manual_timeline_applied": bool(edit_options.get("manual_timeline")),
                     "excluded_prior_exports": excluded_exports,
                     "shot_decisions": [
-                        {"clip_id": cut.clip_id, "reason": cut.reasoning,
-                         "origin": "ai_inference"}
-                        for cut in active_story.timeline
+                        {"clip_id": segment.clip_id,
+                         "reason": (active_story.timeline[index].reasoning
+                                    if index < len(active_story.timeline)
+                                    and active_story.timeline[index].clip_id == segment.clip_id
+                                    else "AI-selected timeline segment; no matching story-cut explanation was saved."),
+                         "origin": "ai_inference",
+                         "frame_evidence": _frame_evidence_for_segment(
+                             result.context_pack.clip_intelligence.get(segment.clip_id), segment)}
+                        for index, segment in enumerate(timeline_ir.video_segments)
                     ] if not edit_options.get("manual_timeline") else [
                         {"clip_id": segment.clip_id, "reason": "User selected or adjusted this shot.",
-                         "origin": "user_override"}
+                         "origin": "user_override",
+                         "frame_evidence": _frame_evidence_for_segment(
+                             result.context_pack.clip_intelligence.get(segment.clip_id), segment)}
                         for segment in timeline_ir.video_segments
                     ],
                     "unsupported_effects": unavailable_effects,
-                    "timeline_validation": {"is_valid": True, "errors": [], "warnings": []},
+                    "timeline_validation": {
+                        "is_valid": bool(edit_options.get("manual_timeline")) or bool(
+                            result.validation and result.validation.passed),
+                        "errors": [] if edit_options.get("manual_timeline") else [
+                            violation.message for violation in (result.validation.violations if result.validation else ())
+                            if violation.severity == "error"
+                        ],
+                        "warnings": [
+                            violation.message for violation in (result.validation.violations if result.validation else ())
+                            if violation.severity != "error"
+                        ],
+                    },
                     "critic_evaluation": critic_verdict,
                 }
                 timeline_row.entries = timeline_ir.model_dump(mode="json")
@@ -557,6 +582,13 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 if job is not None:
                     job.stage = Stage.TIMELINE_BUILDING.value
                 await db.commit()
+
+                if (not edit_options.get("manual_timeline")
+                        and (result.validation is None or not result.validation.passed)):
+                    errors = timeline_row.style_config["timeline_validation"]["errors"]
+                    raise RuntimeError(
+                        "Automatic story plan failed validation. Inspect the saved timeline and adjust it before "
+                        "rendering: " + "; ".join(errors or ["validator returned no passing report"]))
 
                 # --- Layer 13: Media Rendering ---
                 checkpoint.advance_to(TaskStage.RENDERING)
@@ -645,6 +677,26 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             "Captions were requested but local transcription or caption rendering failed. "
                             f"Check the Whisper installation/model ({settings.WHISPER_MODEL_SIZE}): {caption_error}"
                         ) from caption_error
+
+                # Inspect encoded pixels and audio before publishing any render.
+                # A failed requirement leaves the prior successful version current.
+                from services.render_farm.render_critic import inspect_render
+
+                render_quality = await inspect_render(
+                    str(render_file), timeline_ir, ffmpeg_bin=settings.FFMPEG_PATH,
+                    storage_root=str(settings.storage_root_path),
+                    actual_duration_s=render_result.duration_s,
+                    scene_beats=render_brief.scene_beats,
+                    captions_burned=render_file.name.startswith("captioned_"),
+                )
+                timeline_row.style_config = {
+                    **(timeline_row.style_config or {}), "render_quality": render_quality,
+                }
+                await db.commit()
+                if render_quality["status"] == "failed":
+                    failed_checks = ", ".join(item["name"] for item in render_quality["checks"]
+                                              if item["status"] == "failed")
+                    raise RuntimeError(f"Rendered MP4 failed visual verification: {failed_checks}")
 
                 # --- Layer 6 & 13: Platform Export ---
                 checkpoint.advance_to(TaskStage.EXPORTING)
@@ -917,6 +969,20 @@ def _resolved_music_style(context_pack, style_override: dict) -> str | None:
     from services.style_engine.mapper import StyleMapper
 
     return StyleMapper.resolve_style_for_pack(context_pack, style_override).get("music")
+
+
+def _frame_evidence_for_segment(intelligence, segment):
+    """Return only a model observation sampled inside this source window."""
+    if intelligence is None:
+        return None
+    start = segment.source_in_ms / 1000
+    end = segment.source_out_ms / 1000
+    sampled = [item for item in intelligence.frame_evidence if start <= item.time_s < end]
+    if not sampled:
+        return None
+    nearest = min(sampled, key=lambda item: abs(item.time_s - (start + end) / 2))
+    return {"time_s": nearest.time_s, "description": nearest.description,
+            "model_id": nearest.model_id, "status": "model_observation_unverified"}
 
 
 def _refresh_prompt_text_styles(brief, prompt: str):

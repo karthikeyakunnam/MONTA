@@ -24,7 +24,7 @@ from shared.contracts.base import revalidate
 from shared.contracts.explain import Evidence, Explained, clamp
 from shared.contracts.intent import (
     Ambiguity, ArcBeat, Conflict, CreativeBrief, CreativeDirective, IntentAnalysis, MissingInfo,
-    TextOverlayRequirement,
+    SceneBeatRequirement, TextOverlayRequirement,
 )
 from shared.contracts.vocab import CaptionStyle, ColorGrade, Emotion, Genre, MusicStyle, Pace, Platform
 from shared.text import inflection_bases
@@ -500,19 +500,50 @@ class LexicalIntentExtractor:
         visual_decision, _ = LexicalIntentExtractor.decide(r, L.COLOR, ColorGrade)
         emotion_decision, _ = LexicalIntentExtractor.decide(r, L.EMOTION, Emotion)
         text_overlays = LexicalIntentExtractor._text_overlay_requirements(r.normalized.raw)
+        scene_beats = LexicalIntentExtractor._scene_beat_requirements(r.normalized.raw)
         directives.extend(CreativeDirective(category="text", priority="required",
                                             value=f"{item.role}:{item.text}", source_span=item.source_span)
                           for item in text_overlays)
+        directives.extend(CreativeDirective(category="narrative", priority="required",
+                                            value=f"scene_beat_{item.order + 1}:{item.description}",
+                                            source_span=item.source_span)
+                          for item in scene_beats)
         return CreativeBrief(
             visual_treatments=tuple(dict.fromkeys(visual_treatments)),
             emotional_tones=tuple(requested_tones),
             energy_trajectory=energy_trajectory,
             text_overlays=text_overlays,
+            scene_beats=scene_beats,
             directives=tuple(directives),
             evidence=tuple(dict.fromkeys(evidence)),
             visual_confidence=visual_decision.confidence if visual_decision else 0.0,
             emotion_confidence=emotion_decision.confidence if emotion_decision else 0.0,
         )
+
+    @staticmethod
+    def _scene_beat_requirements(prompt: str) -> tuple[SceneBeatRequirement, ...]:
+        """Capture only explicit ordered scene instructions in one sentence."""
+        cue = re.compile(r"\b(open on|start with|begin with|develop through|build through|move through|"
+                         r"then show|show|end with|end on|finish with|finish on)\b", re.IGNORECASE)
+        for sentence in re.split(r"[.!?\n]", prompt):
+            matches = list(cue.finditer(sentence))
+            if len(matches) < 2:
+                continue
+            if matches[0].group(1).casefold() not in {"open on", "start with", "begin with"}:
+                continue
+            if matches[-1].group(1).casefold() not in {"end with", "end on", "finish with", "finish on"}:
+                continue
+            beats = []
+            for index, match in enumerate(matches):
+                end = matches[index + 1].start() if index + 1 < len(matches) else len(sentence)
+                description = sentence[match.end():end].strip(" ,;:-\t")
+                description = re.sub(r"\b(?:and|then)\s*$", "", description, flags=re.IGNORECASE).strip(" ,;:-\t")
+                if not description or len(description) > 200:
+                    return ()
+                beats.append(SceneBeatRequirement(
+                    order=index, description=description, source_span=sentence[match.start():end].strip()))
+            return tuple(beats)
+        return ()
 
     @staticmethod
     def _text_overlay_requirements(prompt: str) -> tuple[TextOverlayRequirement, ...]:

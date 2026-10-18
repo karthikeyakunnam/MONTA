@@ -70,6 +70,7 @@ class PipelineResult:
     story: StoryPlan | None
     validation: ValidationReport | None
     probe_failures: tuple[ProbeFailure, ...]
+    story_reuse_rejected: str | None = None
 
 
 class MontaPipeline:
@@ -193,7 +194,8 @@ class MontaPipeline:
                   cached_context: ContextPack | None = None,
                   reuse_story_plan: StoryPlan | None = None,
                   revision_base_intent: IntentAnalysis | None = None,
-                  manual_timeline_override: bool = False) -> PipelineResult:
+                  manual_timeline_override: bool = False,
+                  redesign_invalid_story: bool = False) -> PipelineResult:
         """End-to-end Layers 3–7 under one trace (trace_id / request_id / project_id / hashed user)."""
         with new_trace(project_id=project_id, user_id=user_id), span("pipeline.run", clips=len(clips), prompt_chars=len(prompt)) as sp:
             outcome = "error"
@@ -202,7 +204,8 @@ class MontaPipeline:
                                          target_platform=target_platform, edit_options=edit_options or {},
                                          cached_context=cached_context, reuse_story_plan=reuse_story_plan,
                                          revision_base_intent=revision_base_intent,
-                                         manual_timeline_override=manual_timeline_override)
+                                         manual_timeline_override=manual_timeline_override,
+                                         redesign_invalid_story=redesign_invalid_story)
                 outcome = result.report.status if result.story else "no_story"
                 sp.set(outcome=outcome, pattern=result.story.story_pattern if result.story else None)
                 return result
@@ -227,7 +230,8 @@ class MontaPipeline:
                    cached_context: ContextPack | None = None,
                    reuse_story_plan: StoryPlan | None = None,
                    revision_base_intent: IntentAnalysis | None = None,
-                   manual_timeline_override: bool = False) -> PipelineResult:
+                   manual_timeline_override: bool = False,
+                   redesign_invalid_story: bool = False) -> PipelineResult:
         if not clips:
             raise PipelineError("at least one clip is required")
         intent = await self._stage("interpret", self.interpret(prompt))
@@ -252,6 +256,7 @@ class MontaPipeline:
                 "compose", self.compose(project_id=project_id, user_id=user_id, intent=intent, metadata=metas)
             )
 
+        reuse_rejected = None
         if reuse_story_plan is not None and pack.clip_intelligence:
             analyzed = pack.clip_intelligence
             reconciled = self.intent_engine.reconcile_with_footage(pack.intent, list(analyzed.values()))
@@ -261,27 +266,31 @@ class MontaPipeline:
                 details = "; ".join(
                     violation.message for violation in validation.violations if violation.severity == "error"
                 )
-                raise PipelineError(f"reused story plan failed revalidation: {details or validation.summary}")
-            plan = self.director.plan(pack)
-            report = ExecutionReport(
-                plan_id=plan.plan_id,
-                status="degraded",
-                results=tuple(TaskResult(
-                    task_id=task.task_id, agent=task.agent, status=TaskStatus.SKIPPED, attempts=0,
+                reuse_rejected = f"reused story plan failed revalidation: {details or validation.summary}"
+                if not redesign_invalid_story:
+                    raise PipelineError(reuse_rejected)
+                logger.warning("%s; rebuilding story from cached source analysis", reuse_rejected)
+            else:
+                plan = self.director.plan(pack)
+                report = ExecutionReport(
+                    plan_id=plan.plan_id,
+                    status="degraded",
+                    results=tuple(TaskResult(
+                        task_id=task.task_id, agent=task.agent, status=TaskStatus.SKIPPED, attempts=0,
+                        duration_ms=0.0,
+                        reasoning=("Reused prior story only as a metadata base; the user timeline is separately validated."
+                                   if manual_timeline_override else
+                                   "Reused the last successful, validated story plan; only render-level settings changed."),
+                    ) for task in plan.execution_plan),
                     duration_ms=0.0,
-                    reasoning=("Reused prior story only as a metadata base; the user timeline is separately validated."
+                    reasoning=("User shot overrides replace the prior story cuts after IR construction."
                                if manual_timeline_override else
-                               "Reused the last successful, validated story plan; only render-level settings changed."),
-                ) for task in plan.execution_plan),
-                duration_ms=0.0,
-                reasoning=("User shot overrides replace the prior story cuts after IR construction."
-                           if manual_timeline_override else
-                           "Clip analysis and story selection were reused; timeline, audio, and render are rebuilt."),
-            )
-            return PipelineResult(
-                intent=pack.intent, context_pack=pack, plan=plan, report=report,
-                story=reuse_story_plan, validation=validation, probe_failures=tuple(failures),
-            )
+                               "Clip analysis and story selection were reused; timeline, audio, and render are rebuilt."),
+                )
+                return PipelineResult(
+                    intent=pack.intent, context_pack=pack, plan=plan, report=report,
+                    story=reuse_story_plan, validation=validation, probe_failures=tuple(failures),
+                )
 
         plan, report, ctx = await self._stage("execute", self.execute(pack))
         ok = lambda tid: ctx.statuses.get(tid) == TaskStatus.SUCCEEDED  # noqa: E731
@@ -289,7 +298,7 @@ class MontaPipeline:
             intent=ctx.pack.intent, context_pack=ctx.pack, plan=plan, report=report,
             story=ctx.results.get("design_story") if ok("design_story") else None,
             validation=ctx.results.get("validate_story") if ok("validate_story") else None,
-            probe_failures=tuple(failures),
+            probe_failures=tuple(failures), story_reuse_rejected=reuse_rejected,
         )
     async def judge_story(self, plan: StoryPlan, pack: ContextPack) -> StoryJudgement:
         """Independent verdict used for best-of selection across retries."""

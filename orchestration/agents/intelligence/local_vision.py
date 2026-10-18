@@ -149,6 +149,10 @@ class LocalVisionPipeline:
     def model_id(self) -> str:
         return f"local_vision:{self.vlm.model_id}+{self.text.model_id}"
 
+    async def describe_frame(self, meta: TechnicalMetadata, frame: ImagePart, time_s: float) -> str:
+        """Describe one source frame without turning it into a clip-wide scene claim."""
+        return await self._describe_frames(meta, [frame], [time_s])
+
     async def _describe_frames(
         self,
         meta: TechnicalMetadata,

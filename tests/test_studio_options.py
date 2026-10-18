@@ -131,6 +131,21 @@ def test_unquoted_title_and_explicit_opening_timing_reach_overlay(tmp_path):
     assert __import__("pathlib").Path(overlays[0].asset_path).is_file()
 
 
+def test_explicit_scene_sequence_is_preserved_as_required_beats():
+    prompt = ("Open on the outdoor event signage and venue setup, develop through arrivals and greetings, "
+              "show the oath-taking moment on stage, and end with the podium speaker. "
+              "Show a clean white title reading Oath-Taking Ceremony for the opening three seconds.")
+    brief = LexicalIntentExtractor().extract(prompt).creative_brief
+    assert [beat.description for beat in brief.scene_beats] == [
+        "the outdoor event signage and venue setup", "arrivals and greetings",
+        "the oath-taking moment on stage", "the podium speaker",
+    ]
+    assert [directive.value for directive in brief.directives
+            if directive.value.startswith("scene_beat_")] == [
+        f"scene_beat_{index + 1}:{beat.description}" for index, beat in enumerate(brief.scene_beats)
+    ]
+
+
 def test_prior_exports_are_excluded_from_auto_story_but_manual_selection_can_use_them():
     from types import SimpleNamespace
     from workers.tasks.pipeline_tasks import _select_auto_sources

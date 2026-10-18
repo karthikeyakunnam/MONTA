@@ -123,6 +123,33 @@ async def test_manual_shot_override_does_not_depend_on_prior_ai_cut_validation(m
     assert "User shot overrides" in manual.report.reasoning
 
 
+async def test_invalid_reused_story_can_redesign_without_reanalyzing_sources(monkeypatch):
+    media = SyntheticMediaBackend({cid: prof for cid, (prof, _) in GYM.items()})
+    pipeline = build(media)
+    first = await pipeline.run(project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM))
+    before_calls = list(media.luma_calls)
+    original_validate = pipeline.validator.validate_plan
+    validations = 0
+
+    def reject_reuse_once(*args, **kwargs):
+        nonlocal validations
+        validations += 1
+        if validations == 1:
+            return revalidate(first.validation, passed=False, summary="saved story no longer validates")
+        return original_validate(*args, **kwargs)
+
+    monkeypatch.setattr(pipeline.validator, "validate_plan", reject_reuse_once)
+    revised = await pipeline.run(
+        project_id="p1", user_id="u1", prompt=NIKE, clips=sources(GYM),
+        cached_context=first.context_pack, reuse_story_plan=first.story,
+        redesign_invalid_story=True,
+    )
+    assert revised.story is not None and revised.validation is not None
+    assert revised.validation.passed
+    assert revised.story_reuse_rejected and "saved story no longer validates" in revised.story_reuse_rejected
+    assert media.luma_calls == before_calls
+
+
 async def test_same_prompt_manual_revision_uses_saved_analysis_without_new_ai(monkeypatch):
     media = SyntheticMediaBackend({cid: prof for cid, (prof, _) in GYM.items()})
     pipeline = build(media)

@@ -201,9 +201,17 @@ export interface TimelineArtifact {
         origin: 'prompt' | 'explicit_setting';
       }>;
     };
-    shot_decisions?: Array<{ clip_id: string; reason: string; origin: 'ai_inference' | 'user_override' }>;
+    shot_decisions?: Array<{
+      clip_id: string; reason: string; origin: 'ai_inference' | 'user_override';
+      frame_evidence?: { time_s: number; description: string; model_id: string; status: 'model_observation_unverified' } | null;
+    }>;
     manual_timeline_applied?: boolean;
     unsupported_effects?: Array<{ effect: string; status: string; reason: string; evidence?: string[] }>;
+    render_quality?: {
+      status: 'passed' | 'warning' | 'failed' | 'unavailable';
+      checks: Array<{ name: string; status: string; detail: string; evidence: Record<string, unknown> }>;
+    };
+    timeline_validation?: { is_valid: boolean; errors: string[]; warnings: string[] };
   };
 }
 

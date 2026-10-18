@@ -142,6 +142,57 @@ async def test_team_with_vision_and_cache_hit():
     assert media.luma_calls == ["a"] and len(provider.requests) == 1
 
 
+async def test_local_frame_evidence_is_timestamped_and_rejects_uncorroborated_scene():
+    from shared.contracts.clip import VisionObservation
+
+    class TimestampedVision:
+        model_id = "local:test"
+
+        async def observe_with_arbitration(self, meta, images, times):
+            return VisionObservation.model_validate(json.loads(VISION_JSON)), None
+
+        async def describe_frame(self, meta, frame, time_s):
+            return ("A speaker at a podium in a hall" if time_s < 3
+                    else "People entering an outdoor venue")
+
+    media = SyntheticMediaBackend({"a": "action"})
+    cache = LRUIntelligenceCache()
+    team = VideoIntelligenceTeam(media, vision=TimestampedVision(), cache=cache)
+    meta = await media.probe(ClipSource(clip_id="a", path="/a.mp4"))
+    result = await team.analyze(meta)
+    assert [item.time_s for item in result.frame_evidence] == [1.5, 4.5]
+    assert result.frame_evidence[0].model_id == "local:test"
+    assert result.scene_type == "" and result.visual_tags == ()
+    assert "withheld" in result.reasoning
+    assert (await team.analyze(meta)).provenance.cache_hit
+
+
+async def test_transient_local_frame_failure_is_retried():
+    from shared.contracts.clip import VisionObservation
+
+    class FlakyVision:
+        model_id = "local:flaky"
+        calls = 0
+
+        async def observe_with_arbitration(self, meta, images, times):
+            return VisionObservation.model_validate(json.loads(VISION_JSON)), None
+
+        async def describe_frame(self, meta, frame, time_s):
+            self.calls += 1
+            if self.calls == 1:
+                raise ProviderUnavailableError("temporary model failure")
+            return "An athlete lifting weights in a gym"
+
+    media = SyntheticMediaBackend({"a": "action"})
+    vision = FlakyVision()
+    result = await VideoIntelligenceTeam(media, vision=vision).analyze(
+        await media.probe(ClipSource(clip_id="a", path="/a.mp4")))
+    assert len(result.frame_evidence) == 2
+    assert vision.calls == 3
+    assert result.provenance.degraded == ()
+    assert result.scene_type == "gym"
+
+
 async def test_vision_failure_degrades_and_is_not_cached():
     media = SyntheticMediaBackend({"a": "pan"})
     provider = ScriptedProvider([ProviderUnavailableError("down"), VISION_JSON])

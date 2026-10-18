@@ -867,6 +867,10 @@ export default function ProjectPage() {
                     <strong>{source?.original_filename ?? segment.clip_id}</strong>
                     <span className="muted">{segment.narrative_role ?? segment.act_id ?? 'Story shot'}{segment.emotional_stage ? ` · ${segment.emotional_stage}` : ''}{segment.is_hero ? ' · hero shot' : ''}</span>
                     <span className="muted">{timeline.trace.shot_decisions?.[index]?.origin === 'user_override' ? 'Manual choice' : 'AI inference'}{timeline.trace.shot_decisions?.[index]?.reason ? ` · ${timeline.trace.shot_decisions[index].reason}` : ''}</span>
+                    {timeline.trace.shot_decisions?.[index]?.frame_evidence ? <details>
+                      <summary>Model observation at {formatDuration(timeline.trace.shot_decisions[index].frame_evidence!.time_s)} · verify against source</summary>
+                      <p className="muted">{timeline.trace.shot_decisions[index].frame_evidence!.description}</p>
+                    </details> : <span className="muted">No sampled frame observation inside this shot.</span>}
                   </div>
                   <div className="plan-range"><span>Source</span>{formatDuration(segment.source_in_ms / 1000)} → {formatDuration(segment.source_out_ms / 1000)}</div>
                   <div className="plan-range"><span>Timeline</span>{formatDuration(segment.timeline_start_ms / 1000)} → {formatDuration(segment.timeline_end_ms / 1000)}</div>
@@ -918,6 +922,20 @@ export default function ProjectPage() {
 
       <details className="section">
         <summary>Advanced · project diagnostics</summary>
+        {timeline?.trace.timeline_validation && !timeline.trace.timeline_validation.is_valid &&
+          <div className="plan-support" role="alert">
+            <strong>Automatic plan needs changes before render</strong>
+            {timeline.trace.timeline_validation.errors.map((error, index) =>
+              <span key={index}>{error}</span>)}
+          </div>}
+        {timeline?.trace.render_quality ? <div className="plan-support">
+          <strong>Encoded MP4 checks · {timeline.trace.render_quality.status}</strong>
+          {timeline.trace.render_quality.checks.map((check) => <span key={check.name}>
+            {check.status} · {check.name.replace(/_/g, ' ')} · {check.detail}
+            {check.evidence.matching_pixel_fraction != null ? ` · matching pixels ${Math.round(Number(check.evidence.matching_pixel_fraction) * 100)}%` : ''}
+            {check.evidence.max_volume_db != null ? ` · peak ${check.evidence.max_volume_db} dBFS` : ''}
+          </span>)}
+        </div> : <p className="muted">No encoded MP4 inspection has been saved for this edit.</p>}
         <div className="grid cols-3">
           <div className="card stat">
             <div className="label">Usable clips</div>

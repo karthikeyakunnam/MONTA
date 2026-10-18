@@ -73,6 +73,16 @@ class TextOverlayRequirement(BaseModel):
         return self
 
 
+class SceneBeatRequirement(BaseModel):
+    """An ordered visual beat explicitly named in the creator's prompt."""
+
+    model_config = ConfigDict(frozen=True)
+
+    order: int = Field(..., ge=0)
+    description: NonEmptyText
+    source_span: NonEmptyText
+
+
 class CreativeDirective(BaseModel):
     """A prompt or setting instruction with explicit priority and provenance."""
 
@@ -95,6 +105,7 @@ class CreativeBrief(BaseModel):
     emotional_tones: tuple[Emotion, ...] = ()
     energy_trajectory: Literal["rising", "steady", "falling"] | None = None
     text_overlays: tuple[TextOverlayRequirement, ...] = ()
+    scene_beats: tuple[SceneBeatRequirement, ...] = ()
     directives: tuple[CreativeDirective, ...] = ()
     evidence: tuple[str, ...] = ()
     visual_confidence: float = Field(0.0, ge=0.0, le=1.0)
