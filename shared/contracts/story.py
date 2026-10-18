@@ -221,6 +221,7 @@ class StoryPlan(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     schema_version: Literal["story.v1"] = STORY_SCHEMA_VERSION
+    explicit_scene_order: bool = False
     story_pattern: str
     pattern_version: int
     story_confidence: float = Field(..., ge=0, le=1)

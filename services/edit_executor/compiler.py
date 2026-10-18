@@ -314,6 +314,12 @@ class FFmpegCompiler:
             filters.append(f"{all_a_nodes}amix=inputs={1 + len(ext_audio_nodes)}:duration=first:dropout_transition=0[a_mixed]")
             final_out_a = "a_mixed"
 
+        if timeline.audio_peak_limit is not None:
+            filters.append(
+                f"[{final_out_a}]alimiter=limit={timeline.audio_peak_limit:.3f}:level=0[a_limited]"
+            )
+            final_out_a = "a_limited"
+
         for index, overlay in enumerate(timeline.text_overlays):
             input_index = input_index_map[str(Path(overlay.asset_path).resolve())]
             start_s = overlay.start_ms / 1000.0

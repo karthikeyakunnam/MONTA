@@ -668,6 +668,8 @@ def build_pipeline(
         team=VideoIntelligenceTeam(media, vision=vision, calibrator=calibrator,
                                    keyframe_count=2 if local_vision_enabled else 4,
                                    keyframe_width=384 if local_vision_enabled else 512,
+                                   max_frame_evidence=16 if local_vision_enabled else 12,
+                                   frame_evidence_interval_s=1.5 if local_vision_enabled else 3.0,
                                    cache=LRUIntelligenceCache(int(os.getenv("MONTA_INTEL_CACHE_SIZE", "10000")))),
         architect=StoryArchitect(library=library, validator=validator, refiner=refiner),
         validator=validator,

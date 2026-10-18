@@ -173,8 +173,13 @@ class IntentEngine:
         updates["creative_brief"] = CreativeBrief(
             visual_treatments=visual_treatments,
             text_overlays=(revised_brief.text_overlays or prior_brief.text_overlays),
+            scene_beats=(revised_brief.scene_beats or prior_brief.scene_beats),
             directives=tuple({(item.category, item.value, item.origin): item
-                              for item in (*prior_brief.directives, *revised_brief.directives)}.values()),
+                              for item in (*(
+                                  prior_brief.directives if not revised_brief.scene_beats else
+                                  tuple(d for d in prior_brief.directives
+                                        if not (d.category == "narrative" and d.value.startswith("scene_beat_")))
+                              ), *revised_brief.directives)}.values()),
             emotional_tones=emotional_tones,
             energy_trajectory=revised_brief.energy_trajectory or prior_brief.energy_trajectory,
             evidence=tuple(dict.fromkeys((*prior_brief.evidence, *revised_brief.evidence))),

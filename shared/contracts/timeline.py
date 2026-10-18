@@ -159,6 +159,26 @@ class TextOverlayIR(BaseModel):
         return self
 
 
+class CaptionCueIR(BaseModel):
+    """Timed caption text in encoded-output time; optional source evidence."""
+
+    model_config = ConfigDict(frozen=True)
+
+    start_ms: TimeMs
+    end_ms: TimeMs
+    text: str = Field(..., min_length=1, max_length=500)
+    origin: Literal["local_asr", "user_override"]
+    source_path: str | None = None
+    source_start_ms: TimeMs | None = None
+    source_end_ms: TimeMs | None = None
+
+    @model_validator(mode="after")
+    def _validate_caption(self):
+        if self.end_ms <= self.start_ms or not self.text.strip():
+            raise ValueError("caption must have nonblank text and a positive duration")
+        return self
+
+
 class TimelineIR(BaseModel):
     """Authoritative, complete edit timeline specification."""
 
@@ -173,7 +193,10 @@ class TimelineIR(BaseModel):
     scale_mode: ScaleMode = ScaleMode.FIT
     video_segments: tuple[VideoSegmentIR, ...] = Field(..., min_length=1)
     audio_segments: tuple[AudioSegmentIR, ...] = ()
+    audio_peak_limit: float | None = Field(None, ge=0.5, le=0.98,
+                                           description="Optional verified-clipping repair, linear amplitude")
     text_overlays: tuple[TextOverlayIR, ...] = ()
+    caption_cues: tuple[CaptionCueIR, ...] = ()
     grain_strength: int = Field(0, ge=0, le=100)
     grain_seed: int = Field(17, ge=0, le=2_147_483_647)
     render_profile: RenderProfileIR = RenderProfileIR()
@@ -202,6 +225,11 @@ class TimelineIR(BaseModel):
             raise ValueError(
                 f"total_duration_ms ({self.total_duration_ms}) is less than last segment end ({calculated_end})"
             )
+        if any(cue.end_ms > round(self.render_duration_s * 1000) for cue in self.caption_cues):
+            raise ValueError("caption cue extends past rendered duration")
+        if any(later.start_ms < earlier.start_ms
+               for earlier, later in zip(self.caption_cues, self.caption_cues[1:])):
+            raise ValueError("caption cues must be ordered")
         return self
 
 

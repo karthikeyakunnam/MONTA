@@ -16,8 +16,10 @@ Deterministic for a given ContextPack when no refiner is configured.
 
 import logging
 from collections.abc import Sequence
+from dataclasses import replace
 
 from orchestration.agents.story import assembly
+from orchestration.agents.story.beat_matching import BeatMatchError, match_scene_beats
 from orchestration.agents.story.patterns import DEFAULT_LIBRARY, PatternLibrary
 from orchestration.agents.story.refiner import StoryRefiner
 from orchestration.agents.story.scoring import emotion_score, pacing_score, story_score
@@ -25,7 +27,7 @@ from orchestration.agents.story.selection import AdaptedPattern, PatternChoice, 
 from orchestration.agents.story.validator import TimelineValidator
 from shared.contracts.context import ContextPack
 from shared.contracts.explain import Evidence, Explained, clamp
-from shared.contracts.story import ActRationale, StoryPlan, StoryReasoning
+from shared.contracts.story import ActRationale, StoryPlan, StoryReasoning, TimelineSegment
 from shared.contracts.vocab import Emotion, Pace
 from shared.exceptions import PipelineError
 from shared.observability import catalog as m
@@ -81,15 +83,69 @@ class StoryArchitect:
         emotion = intent.emotion.value
         pace = intent.pace.value
 
-        try:
-            draft = assembly.assign(adapted, clips, emotion)
-        except ValueError as e:
-            raise StoryDesignError(str(e)) from e
-        draft = assembly.fit_to_duration(adapted, draft, clips, emotion)
-        best, timeline, report, repairs = assembly.repair(adapted, draft, clips, self.validator, pace, emotion)
+        scene_beats = intent.creative_brief.scene_beats
+        if scene_beats:
+            try:
+                windows = match_scene_beats(scene_beats, clips, adapted.target_duration_s)
+            except BeatMatchError as e:
+                raise StoryDesignError(str(e)) from e
+            act_clips = {act.act_id: [] for act in adapted.acts}
+            fits = {}
+            timeline_rows = []
+            cursor = 0.0
+            for index, window in enumerate(windows):
+                act = adapted.acts[min(len(adapted.acts) - 1, index * len(adapted.acts) // len(windows))]
+                clip = clips[window.clip_id]
+                if clip.clip_id not in act_clips[act.act_id]:
+                    act_clips[act.act_id].append(clip.clip_id)
+                fits[clip.clip_id] = assembly.clip_fit(clip, act, emotion)
+                end = (round(adapted.target_duration_s, 3) if index == len(windows) - 1
+                       else round(adapted.target_duration_s * (index + 1) / len(windows), 3))
+                length = end - round(cursor, 3)
+                source_in = round(min(window.source_in_s, clip.duration_s - length), 3)
+                source_out = round(source_in + length, 3)
+                beat = scene_beats[index]
+                if window.evidence_basis == "gesture_and_interaction":
+                    observation_note = (
+                        "Local frame descriptions show a greeting-related gesture and a separate "
+                        "interpersonal action near "
+                    )
+                else:
+                    observation_note = (
+                        f"Local frame model independently named {', '.join(window.supported_concepts)} near "
+                    )
+                timeline_rows.append(TimelineSegment(
+                    index=index, clip_id=clip.clip_id, act_id=act.act_id,
+                    start=round(cursor, 3), end=end, source_in=source_in, source_out=source_out,
+                    energy=assembly.window_energy(clip, source_in, source_out),
+                    is_hero=index == len(windows) - 1,
+                    purpose=f"Requested scene beat {index + 1}: {beat.description}",
+                    reasoning=(f"Prompt required '{beat.description}'. " + observation_note +
+                               f"{window.evidence_times_s[0]:.2f}s and {window.evidence_times_s[1]:.2f}s "
+                               f"of this source; interpretation is uncertain and the model observations are unverified. "
+                               + (f"Unverified concepts: {', '.join(window.unmatched_concepts)}. "
+                                  if window.unmatched_concepts else "")
+                               + f"Selected {source_in:.2f}–{source_out:.2f}s without reusing source frames."),
+                ))
+                cursor = end
+            best = assembly.Assignment(acts=act_clips, hero=windows[-1].clip_id, fits=fits,
+                                       notes=["Explicit visual beats kept in prompt order; source meaning still needs review."])
+            timeline = tuple(timeline_rows)
+            report = self.validator.validate(
+                timeline, assembly.act_specs(adapted), clips, pace,
+                config=replace(assembly.validation_config(adapted), explicit_scene_order=True),
+                target_duration_s=adapted.target_duration_s)
+            repairs = []
+        else:
+            try:
+                draft = assembly.assign(adapted, clips, emotion)
+            except ValueError as e:
+                raise StoryDesignError(str(e)) from e
+            draft = assembly.fit_to_duration(adapted, draft, clips, emotion)
+            best, timeline, report, repairs = assembly.repair(adapted, draft, clips, self.validator, pace, emotion)
 
         refinement_note = None
-        if self.refiner is not None:
+        if self.refiner is not None and not scene_beats:
             best, timeline, report, refinement_note = await self._refine(pack, adapted, choice, best, timeline, report, clips, pace, emotion)
 
         s_story = story_score(adapted, timeline, clips, best.fits, choice.confidence, report)
@@ -103,6 +159,7 @@ class StoryArchitect:
         )
 
         return StoryPlan(
+            explicit_scene_order=bool(scene_beats),
             story_pattern=adapted.pattern.pattern_id,
             pattern_version=adapted.pattern.version,
             story_confidence=round(confidence, 3),

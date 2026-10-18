@@ -870,6 +870,7 @@ export default function ProjectPage() {
                     {timeline.trace.shot_decisions?.[index]?.frame_evidence ? <details>
                       <summary>Model observation at {formatDuration(timeline.trace.shot_decisions[index].frame_evidence!.time_s)} · verify against source</summary>
                       <p className="muted">{timeline.trace.shot_decisions[index].frame_evidence!.description}</p>
+                      {source?.preview_url && <a href={`${mediaUrl(source.preview_url)}#t=${timeline.trace.shot_decisions[index].frame_evidence!.time_s.toFixed(3)}`} target="_blank" rel="noreferrer">Open original source at this timestamp</a>}
                     </details> : <span className="muted">No sampled frame observation inside this shot.</span>}
                   </div>
                   <div className="plan-range"><span>Source</span>{formatDuration(segment.source_in_ms / 1000)} → {formatDuration(segment.source_out_ms / 1000)}</div>
@@ -922,6 +923,9 @@ export default function ProjectPage() {
 
       <details className="section">
         <summary>Advanced · project diagnostics</summary>
+        {timeline?.trace.speech_alignment && <p className="muted">
+          Speech alignment · {timeline.trace.speech_alignment.status}: {timeline.trace.speech_alignment.reason}
+        </p>}
         {timeline?.trace.timeline_validation && !timeline.trace.timeline_validation.is_valid &&
           <div className="plan-support" role="alert">
             <strong>Automatic plan needs changes before render</strong>

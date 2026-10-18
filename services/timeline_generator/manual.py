@@ -3,7 +3,7 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.base import revalidate
-from shared.contracts.timeline import ColorAdjustment, TimelineIR, TransitionType, VideoSegmentIR
+from shared.contracts.timeline import CaptionCueIR, ColorAdjustment, TimelineIR, TransitionType, VideoSegmentIR
 from services.edit_executor.validator import EditPlanValidator
 
 
@@ -106,7 +106,10 @@ def apply_manual_timeline(base: TimelineIR, manual: ManualTimeline,
                              volume=manual.music_volume if manual.music_volume is not None else track.volume,
                              ducking=manual.music_ducking if manual.music_ducking is not None else track.ducking)
                   for track in base.audio_segments if track.timeline_start_ms < cursor)
+    captions = (tuple(CaptionCueIR(start_ms=round(c.start * 1000), end_ms=round(c.end * 1000),
+                                   text=c.text, origin="user_override") for c in manual.captions)
+                if manual.captions is not None else ())
     edited = revalidate(base, video_segments=tuple(segments), audio_segments=audio,
-                        total_duration_ms=cursor)
+                        caption_cues=captions, total_duration_ms=cursor)
     EditPlanValidator().validate(edited, source_durations_ms=source_durations_ms).raise_if_invalid()
     return edited

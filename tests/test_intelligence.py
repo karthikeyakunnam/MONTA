@@ -206,6 +206,23 @@ async def test_vision_failure_degrades_and_is_not_cached():
     assert recovered.provenance.vision_model is not None and not recovered.provenance.cache_hit
 
 
+async def test_timestamped_observations_survive_structured_vision_failure():
+    class PartialVision:
+        model_id = "local:test"
+
+        async def observe_with_arbitration(self, meta, images, times):
+            raise ProviderUnavailableError("structuring model unavailable")
+
+        async def describe_frame(self, meta, frame, time_s):
+            return "A man speaking at a podium"
+
+    media = SyntheticMediaBackend({"a": "static"})
+    result = await VideoIntelligenceTeam(media, vision=PartialVision()).analyze(
+        await media.probe(ClipSource(clip_id="a", path="/a.mp4")))
+    assert len(result.frame_evidence) >= 2
+    assert result.provenance.degraded and "structuring model unavailable" in result.provenance.degraded[0]
+
+
 async def test_vision_requires_capability():
     with pytest.raises(CapabilityError):
         VisionAnalyzer(ScriptedProvider([], vision=False))

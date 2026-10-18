@@ -84,13 +84,19 @@ async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
         cut_issues.append({"at_s": round(start, 3), "duration_s": round(duration, 3),
                            "deliberate_fade": deliberate})
     unexplained = [item for item in cut_issues if not item["deliberate_fade"]]
+    ending_blackout = [dict(at_s=round(start, 3), duration_s=round(duration, 3))
+                       for start, end, duration in intervals
+                       if end >= encoded_duration - 0.12 and duration >= 0.05
+                       and timeline.video_segments[-1].fade_out_ms == 0]
     checks.append({
-        "name": "black_frames", "status": "failed" if unexplained else "warning" if intervals else "passed",
+        "name": "black_frames", "status": "failed" if unexplained or ending_blackout else
+        "warning" if intervals else "passed",
         "evidence": {"intervals": [dict(start_s=round(s, 3), end_s=round(e, 3),
                                       duration_s=round(d, 3)) for s, e, d in intervals],
-                     "cut_issues": cut_issues},
-        "detail": ("Unexplained black frames at a cut" if unexplained else
-                   "Black frames coincide with requested picture fades" if intervals else
+                     "cut_issues": cut_issues, "ending_blackout": ending_blackout},
+        "detail": ("Unrequested near-black ending" if ending_blackout else
+                   "Unexplained black frames at a cut" if unexplained else
+                   "Near-black frames detected; review intentional fades or source darkness" if intervals else
                    "No near-black intervals detected"),
     })
 
@@ -131,9 +137,36 @@ async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
         left, right = _image(sampled[index * 2]), _image(sampled[index * 2 + 1])
         jump = abs(float(left.mean()) - float(right.mean()))
         if jump > 35:
-            jumps.append({"at_s": round(boundary, 3), "mean_rgb_jump": round(jump, 1)})
+            entry = {"at_s": round(boundary, 3), "mean_rgb_jump": round(jump, 1),
+                     "classification": "source_comparison_unavailable"}
+            segment_index = next((i for i, segment in enumerate(timeline.video_segments[1:], 1)
+                                  if abs(segment.timeline_start_ms / 1000 - boundary) < 0.001), None)
+            if segment_index is not None:
+                previous = timeline.video_segments[segment_index - 1]
+                following = timeline.video_segments[segment_index]
+                if following.transition_in.value == "cut":
+                    source_means = []
+                    for segment, at in ((previous, max(0, previous.source_out_ms / 1000 - 0.12)),
+                                        (following, following.source_in_ms / 1000 + 0.12)):
+                        source = check_input_path(segment.source_path, media.allowed_roots)
+                        source_meta = TechnicalMetadata(
+                            clip_id=segment.clip_id, path=str(source),
+                            duration_s=max(0.1, segment.source_out_ms / 1000), fps=timeline.fps,
+                            width=timeline.width, height=timeline.height, codec="source",
+                            has_audio=False, file_size_bytes=source.stat().st_size,
+                            fingerprint="source-cut-comparison",
+                        )
+                        source_means.append(float(_image((await media.keyframes(
+                            source_meta, [at], width=160))[0]).mean()))
+                    source_jump = abs(source_means[0] - source_means[1])
+                    entry["source_mean_rgb_jump"] = round(source_jump, 1)
+                    entry["classification"] = (
+                        "source_driven_scene_change" if abs(jump - source_jump) <= 15
+                        else "output_change_exceeds_source" if jump > source_jump + 15
+                        else "source_change_reduced_in_output")
+            jumps.append(entry)
     checks.append({"name": "exposure_cuts", "status": "warning" if jumps else "passed",
-                   "detail": "Adjacent cut-frame mean RGB difference; scene changes can be intentional",
+                   "detail": "Adjacent cut-frame brightness compared with the original source frames; scene changes can be intentional",
                    "evidence": {"threshold": 35, "jumps": jumps,
                                 "sampled_boundaries": len(boundaries),
                                 "total_boundaries": len(all_boundaries)}})
@@ -144,14 +177,44 @@ async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
             "-i", str(output), "-vn", "-af", "volumedetect", "-f", "null", "-",
         ])
         peak = MAX_VOLUME.search(audio_log.decode(errors="replace"))
+        decoded = await media._run([
+            ffmpeg_bin, "-v", "error", "-nostdin", *PROTOCOL_ARGS,
+            "-i", str(output), "-vn", "-ac", "1", "-ar", "16000",
+            "-f", "f32le", "pipe:1",
+        ])
+        samples = np.frombuffer(decoded, dtype="<f4")
+        high = np.abs(samples) >= 0.999
+        high_indices = np.flatnonzero(high)
+        if len(high_indices):
+            starts = np.r_[0, np.flatnonzero(np.diff(high_indices) > 1) + 1]
+            ends = np.r_[starts[1:], len(high_indices)]
+            longest_run = int(np.max(ends - starts))
+        else:
+            longest_run = 0
+        high_fraction = float(np.mean(high)) if len(samples) else 0.0
+        confirmed_clipping = high_fraction >= 0.001 and longest_run >= 3
     else:
         peak = None
+        samples = np.array([], dtype="<f4")
+        high_fraction = 0.0
+        longest_run = 0
+        confirmed_clipping = False
     peak_db = float(peak.group(1)) if peak else None
     checks.append({"name": "audio_peak", "status": "warning" if peak_db is not None and peak_db >= -0.2
                    else "passed" if peak_db is not None else "unavailable",
                    "detail": ("No audio stream in encoded MP4" if not meta.has_audio else
                               "Peak near 0 dBFS indicates possible clipping; this is not a speech-alignment check"),
                    "evidence": {"max_volume_db": peak_db}})
+    checks.append({"name": "audio_clipping",
+                   "status": "failed" if confirmed_clipping else "warning" if high_fraction > 0 else
+                   "passed" if len(samples) else "unavailable",
+                   "detail": ("Decoded mono float samples at 16 kHz: at least 0.1% near full scale and "
+                              "a run of at least 3 consecutive samples is treated as confirmed clipping. "
+                              "AAC decoding may introduce isolated overshoots."),
+                   "evidence": {"sample_count": len(samples),
+                                "near_full_scale_fraction": round(high_fraction, 6),
+                                "longest_near_full_scale_run": longest_run,
+                                "decoded_peak": round(float(np.max(np.abs(samples))), 4) if len(samples) else None}})
 
     if scene_beats:
         checks.append({"name": "narrative_scene_relevance", "status": "unavailable",

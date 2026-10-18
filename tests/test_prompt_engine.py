@@ -176,6 +176,21 @@ def test_incremental_revision_keeps_unchanged_constraints_and_merges_only_the_ne
     assert any("inherited unchanged requirements" in note for note in merged.revisions)
 
 
+def test_incremental_revision_keeps_or_replaces_explicit_scene_order():
+    previous = lex.extract("Open on venue signage, develop through arrivals, and end with podium speaker.")
+    unchanged = lex.extract("Keep everything but make the ending more hopeful.")
+    retained = IntentEngine.merge_revision(previous, unchanged)
+    assert [beat.description for beat in retained.creative_brief.scene_beats] == [
+        "venue signage", "arrivals", "podium speaker"]
+
+    changed = lex.extract("Open on the stage, develop through greetings, and end with the speech.")
+    replaced = IntentEngine.merge_revision(previous, changed)
+    assert [beat.description for beat in replaced.creative_brief.scene_beats] == [
+        "the stage", "greetings", "the speech"]
+    assert len([d for d in replaced.creative_brief.directives
+                if d.category == "narrative" and d.value.startswith("scene_beat_")]) == 3
+
+
 def test_shadowy_happy_motivational_brief_keeps_visual_and_emotional_axes_separate():
     intent = lex.extract("A shadowy, happy, motivational reel")
     brief = intent.creative_brief

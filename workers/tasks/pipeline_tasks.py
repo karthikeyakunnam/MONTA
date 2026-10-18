@@ -21,6 +21,7 @@ Design notes:
 
 import asyncio
 import logging
+import math
 import os
 import re
 from datetime import datetime, timezone
@@ -240,13 +241,16 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
             # A fingerprint proves the uploaded bytes are unchanged, but it cannot
             # make signal-only legacy analysis equivalent to newly available vision.
             # Re-analyze just those clips when the real local vision stack is ready.
-            if cached_context and pipeline.director.planner.vision_enabled:
+            if (cached_context and pipeline.director.planner.vision_enabled
+                    and not (edit_options.get("manual_timeline") and reuse_story)):
+                duration_by_id = {meta.clip_id: meta.duration_s for meta in cached_context.video_metadata}
                 vision_reanalysis_ids = [clip_id for clip_id, intelligence in cached_context.clip_intelligence.items()
-                                         if not intelligence.provenance.vision_model
-                                         or (hasattr(pipeline.team.vision, "describe_frame")
-                                             and (not intelligence.frame_evidence
-                                                  or any("frame evidence" in note
-                                                         for note in intelligence.provenance.degraded)))]
+                                         if hasattr(pipeline.team.vision, "describe_frame")
+                                         and len(intelligence.frame_evidence) < math.ceil(0.75 * min(
+                                             pipeline.team.max_frame_evidence,
+                                             max(1, math.ceil(duration_by_id.get(
+                                                 clip_id, intelligence.duration_s) /
+                                                 pipeline.team.frame_evidence_interval_s))))]
                 if vision_reanalysis_ids:
                     retained = {clip_id: intelligence for clip_id, intelligence
                                 in cached_context.clip_intelligence.items()
@@ -321,27 +325,13 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     "reused_story_plan": reuse_story is not None and not result.story_reuse_rejected,
                     "story_reuse_rejected_reason": result.story_reuse_rejected,
                 }
-                project.parsed_intent = intent
-                # Keep the complete ContextPack, including real source metadata and
-                # intelligence provenance, as the first inspectable M3 artifact.
-                project.context = result.context_pack.model_dump(mode="json")
-                for clip_id, intelligence in result.context_pack.clip_intelligence.items():
-                    clip = await db.get(Clip, clip_id)
-                    if clip is None:
-                        continue
-                    payload = intelligence.model_dump(mode="json")
-                    clip.intelligence = payload
-                    clip.status = ClipStatus.ANALYZED.value
-                    clip.scene_tags = list(intelligence.visual_tags) or None
-                    clip.actions = list(intelligence.activities) or None
-                    clip.quality_score = intelligence.quality_score
-                    clip.quality_details = {"energy_score": intelligence.energy_score,
-                                            "lighting": intelligence.lighting.value,
-                                            "camera_motion": intelligence.camera_motion.value}
-                    clip.emotion_tags = [intelligence.emotion.value] if intelligence.emotion else None
-
                 failures = [r.task_id for r in result.report.results if r.status.value == "failed"]
                 if result.story is None:
+                    # A failed revision must not replace the analysis and intent used
+                    # by the last successful edit. Keep the attempted analysis on the
+                    # failed job for diagnosis instead.
+                    job.result = {**job.result, "attempted_context_snapshot":
+                                  result.context_pack.model_dump(mode="json")}
                     project.status = ProjectStatus.FAILED.value
                     project.status_detail = f"story design did not complete: {result.report.reasoning}"
                     if job is not None:
@@ -351,6 +341,22 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     await db.commit()
                     publish(Stage.FAILED, project.status_detail, detail={"failed_tasks": failures})
                     return {"project_id": project_id, "status": "failed", "reason": result.report.reasoning}
+
+                project.parsed_intent = intent
+                project.context = result.context_pack.model_dump(mode="json")
+                for clip_id, intelligence in result.context_pack.clip_intelligence.items():
+                    clip = await db.get(Clip, clip_id)
+                    if clip is None:
+                        continue
+                    clip.intelligence = intelligence.model_dump(mode="json")
+                    clip.status = ClipStatus.ANALYZED.value
+                    clip.scene_tags = list(intelligence.visual_tags) or None
+                    clip.actions = list(intelligence.activities) or None
+                    clip.quality_score = intelligence.quality_score
+                    clip.quality_details = {"energy_score": intelligence.energy_score,
+                                            "lighting": intelligence.lighting.value,
+                                            "camera_motion": intelligence.camera_motion.value}
+                    clip.emotion_tags = [intelligence.emotion.value] if intelligence.emotion else None
 
                 story = result.story.model_dump(mode="json")
                 judgement = await pipeline.judge_story(result.story, result.context_pack)
@@ -522,9 +528,77 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     grain_strength=grain_strength,
                 )
 
+                # Transcribe original sources before rendering, once per unique
+                # source. The cache keeps source-relative timestamps stable across
+                # revisions; a missing model never triggers an implicit download.
+                manual_captions = (edit_options.get("manual_timeline") or {}).get("captions")
+                caption_style = edit_options.get("caption_style")
+                if caption_style is None:
+                    inferred_caption = result.context_pack.intent.caption_style
+                    caption_style = inferred_caption.value.value if inferred_caption and inferred_caption.value else "None"
+                if manual_captions and caption_style == "None":
+                    raise ValueError("Manual captions require a caption style; select one in Revise edit")
+                speech_alignment = {"status": "unavailable", "reason": "No source-level transcript was available."}
+                if not edit_options.get("manual_timeline") or (caption_style != "None" and manual_captions is None):
+                    from speech.transcriber import LocalWhisperModelUnavailable, WhisperTranscriber
+
+                    transcriber = WhisperTranscriber(model_size=settings.WHISPER_MODEL_SIZE,
+                                                     ffmpeg_bin=settings.FFMPEG_PATH)
+                    try:
+                        transcriber.available_model_path()
+                    except LocalWhisperModelUnavailable as exc:
+                        speech_alignment = {"status": "blocked", "reason": str(exc)}
+                        if caption_style != "None":
+                            raise RuntimeError(f"Captions need a local Whisper checkpoint: {exc}") from exc
+                    else:
+                        from speech.pacing import align_timeline_to_speech
+                        from services.edit_executor.validator import EditPlanValidator
+
+                        transcripts = {}
+                        provenance = []
+                        for segment in timeline_ir.video_segments:
+                            if segment.has_audio and segment.source_path not in transcripts:
+                                publish(Stage.TIMELINE_BUILDING,
+                                        f"Transcribing source audio for {segment.clip_id} locally")
+                                transcript = await transcriber.transcribe_video_cached(
+                                    segment.source_path,
+                                    settings.storage_root_path / "transcripts" / project_id,
+                                )
+                                transcripts[segment.source_path] = transcript
+                                provenance.append(transcript["provenance"])
+                        source_durations = {item.clip_id: round(item.duration_s * 1000)
+                                            for item in result.context_pack.video_metadata}
+                        speech_plan = align_timeline_to_speech(
+                            timeline_ir, transcripts, source_durations,
+                            preserve_cuts=bool(edit_options.get("manual_timeline")),
+                        )
+                        EditPlanValidator().validate(
+                            speech_plan.timeline, source_durations_ms=source_durations,
+                        ).raise_if_invalid()
+                        timeline_ir = speech_plan.timeline
+                        speech_alignment = {"status": speech_plan.status,
+                                            "decisions": list(speech_plan.decisions),
+                                            "provenance": provenance,
+                                            "caption_count": len(timeline_ir.caption_cues),
+                                            "reason": "Transcript-backed boundary proposal; speech accuracy needs human review."
+                                            if transcripts else "No audio source was available for transcription."}
+                elif edit_options.get("manual_timeline"):
+                    speech_alignment = {"status": "user_override", "reason":
+                                        "Manual cuts and any manual captions were retained; speech alignment was not inferred."}
+
                 existing_timeline = (await db.execute(
                     select(Timeline).where(Timeline.project_id == project_id)
                 )).scalar_one_or_none()
+                if existing_timeline and existing_timeline.entries:
+                    previous_entries = existing_timeline.entries
+                    previous_quality = (existing_timeline.style_config or {}).get("render_quality") or {}
+                    audio_passed = any(item.get("name") == "audio_clipping" and item.get("status") == "passed"
+                                       for item in previous_quality.get("checks", ()))
+                    previous_limit = previous_entries.get("audio_peak_limit")
+                    previous_paths = {segment["source_path"] for segment in previous_entries.get("video_segments", ())}
+                    current_paths = {segment.source_path for segment in timeline_ir.video_segments}
+                    if audio_passed and previous_limit is not None and current_paths == previous_paths:
+                        timeline_ir = revalidate(timeline_ir, audio_peak_limit=previous_limit)
                 timeline_row = existing_timeline or Timeline(id=f"timeline_{job_id}", project_id=project_id)
                 timeline_row.story_acts = {"assignments": active_story.act_assignments, "hero_clip_id": active_story.hero_clip_id}
                 timeline_row.style_config = {
@@ -556,6 +630,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                         for segment in timeline_ir.video_segments
                     ],
                     "unsupported_effects": unavailable_effects,
+                    "speech_alignment": speech_alignment,
                     "timeline_validation": {
                         "is_valid": bool(edit_options.get("manual_timeline")) or bool(
                             result.validation and result.validation.passed),
@@ -616,13 +691,6 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 if not render_result.validation_passed:
                     raise RuntimeError("FFprobe did not validate the rendered MP4.")
 
-                caption_style = edit_options.get("caption_style")
-                if caption_style is None:
-                    inferred_caption = result.context_pack.intent.caption_style
-                    caption_style = inferred_caption.value.value if inferred_caption and inferred_caption.value else "None"
-                manual_captions = (edit_options.get("manual_timeline") or {}).get("captions")
-                if manual_captions and caption_style == "None":
-                    raise ValueError("Manual captions require a caption style; select one in Revise edit")
                 if manual_captions is not None or (caption_style and caption_style != "None"):
                     timeline_row.style_config = {
                         **(timeline_row.style_config or {}),
@@ -640,7 +708,11 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             ffmpeg_bin=settings.FFMPEG_PATH,
                             temp_dir=str(render_dir),
                         )
-                        captions = manual_captions if manual_captions is not None else await caption_engine.transcribe(str(render_file))
+                        captions = [
+                            {"start": cue.start_ms / 1000, "end": cue.end_ms / 1000,
+                             "text": cue.text}
+                            for cue in timeline_ir.caption_cues
+                        ]
                         timeline_row.style_config = {
                             **(timeline_row.style_config or {}),
                             "caption_segments": [
@@ -648,7 +720,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                                 for segment in captions
                             ],
                             "caption_state": ("user_edited" if captions else "user_removed")
-                            if manual_captions is not None else ("transcribed" if captions else "no_speech_detected"),
+                            if manual_captions is not None else (
+                                "transcribed" if captions else "no_complete_source_caption_cues"),
                         }
                         if captions:
                             caption_file = render_dir / f"captioned_{job_id}.mp4"
@@ -689,14 +762,89 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     scene_beats=render_brief.scene_beats,
                     captions_burned=render_file.name.startswith("captioned_"),
                 )
+                failed_checks = {item["name"] for item in render_quality["checks"]
+                                 if item["status"] == "failed"}
+                if (failed_checks == {"audio_clipping"}
+                        and not render_file.name.startswith("captioned_")
+                        and timeline_ir.audio_peak_limit is None):
+                    from shared.contracts.base import revalidate
+                    from services.edit_executor.validator import EditPlanValidator
+
+                    repaired_timeline = revalidate(timeline_ir, audio_peak_limit=0.6)
+                    source_durations_ms = {meta.clip_id: round(meta.duration_s * 1000)
+                                           for meta in result.context_pack.video_metadata}
+                    EditPlanValidator().validate(
+                        repaired_timeline, source_durations_ms=source_durations_ms).raise_if_invalid()
+                    repaired_file = render_dir / f"repaired_audio_{job_id}.mp4"
+                    publish(Stage.RENDERING, "Decoded samples confirmed clipping; rendering one limited-audio revision")
+                    repaired_result = await pipeline.render_story(
+                        story=active_story, pack=result.context_pack,
+                        output_path=str(repaired_file), on_progress=on_render_progress,
+                        timeline=repaired_timeline,
+                    )
+                    if repaired_result.success and repaired_result.validation_passed:
+                        repaired_quality = await inspect_render(
+                            str(repaired_file), repaired_timeline, ffmpeg_bin=settings.FFMPEG_PATH,
+                            storage_root=str(settings.storage_root_path),
+                            actual_duration_s=repaired_result.duration_s,
+                            scene_beats=render_brief.scene_beats,
+                        )
+                        repaired_quality["repair_attempt"] = {
+                            "cause": "audio_clipping", "timeline_change": "audio_peak_limit=0.6",
+                            "previous_output_path": str(render_file),
+                            "previous_check": next(item for item in render_quality["checks"]
+                                                   if item["name"] == "audio_clipping"),
+                        }
+                        render_quality = repaired_quality
+                        if not any(item["status"] == "failed" for item in repaired_quality["checks"]):
+                            render_file = repaired_file
+                            render_result = repaired_result
+                            timeline_ir = repaired_timeline
+                            timeline_row.entries = repaired_timeline.model_dump(mode="json")
+                    else:
+                        render_quality["repair_attempt"] = {
+                            "cause": "audio_clipping", "timeline_change": "audio_peak_limit=0.6",
+                            "error": repaired_result.error_message or "repaired render did not validate",
+                        }
+                from services.render_farm.targeted_repair import attempt_black_ending_repair
+
+                async def render_ending_candidate(candidate, path):
+                    publish(Stage.RENDERING, "Source ending fades to black; shifting the final source window earlier")
+                    return await pipeline.render_story(
+                        story=active_story, pack=result.context_pack,
+                        output_path=str(path), on_progress=on_render_progress, timeline=candidate,
+                    )
+
+                async def inspect_ending_candidate(candidate, path, encoded):
+                    return await inspect_render(
+                        str(path), candidate, ffmpeg_bin=settings.FFMPEG_PATH,
+                        storage_root=str(settings.storage_root_path),
+                        actual_duration_s=encoded.duration_s, scene_beats=render_brief.scene_beats,
+                    )
+
+                ending_outcome = await attempt_black_ending_repair(
+                    timeline_ir, render_quality, render_file, render_result,
+                    render_dir / f"repaired_ending_{job_id}.mp4",
+                    {meta.clip_id: round(meta.duration_s * 1000)
+                     for meta in result.context_pack.video_metadata},
+                    render_ending_candidate, inspect_ending_candidate,
+                    manual_override=bool(edit_options.get("manual_timeline")) or
+                                    render_file.name.startswith("captioned_"),
+                )
+                render_quality = ending_outcome.report
+                if ending_outcome.accepted:
+                    render_file = ending_outcome.output_path
+                    render_result = ending_outcome.result
+                    timeline_ir = ending_outcome.timeline
+                    timeline_row.entries = timeline_ir.model_dump(mode="json")
                 timeline_row.style_config = {
                     **(timeline_row.style_config or {}), "render_quality": render_quality,
                 }
                 await db.commit()
                 if render_quality["status"] == "failed":
-                    failed_checks = ", ".join(item["name"] for item in render_quality["checks"]
-                                              if item["status"] == "failed")
-                    raise RuntimeError(f"Rendered MP4 failed visual verification: {failed_checks}")
+                    names = ", ".join(item["name"] for item in render_quality["checks"]
+                                      if item["status"] == "failed")
+                    raise RuntimeError(f"Rendered MP4 failed visual verification: {names}")
 
                 # --- Layer 6 & 13: Platform Export ---
                 checkpoint.advance_to(TaskStage.EXPORTING)

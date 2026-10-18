@@ -9,7 +9,7 @@ import pytest
 
 from services.edit_executor.caption_engine import CaptionEngine
 from speech.caption_generator import CaptionGenerator
-from speech.transcriber import WhisperTranscriber
+from speech.transcriber import LocalWhisperModelUnavailable, WhisperTranscriber
 from shared.contracts.vocab import CaptionStyle
 
 
@@ -17,6 +17,27 @@ SAMPLE_SEGMENTS = [
     {"id": 0, "start": 0.5, "end": 2.0, "text": "Welcome to MONTA"},
     {"id": 1, "start": 2.2, "end": 4.5, "text": "Automated AI Video Editing"},
 ]
+
+
+def test_missing_local_whisper_weights_report_unavailable_without_download(tmp_path, monkeypatch):
+    import whisper
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    monkeypatch.setattr(whisper, "load_model", lambda *_args: pytest.fail("unexpected model download"))
+    with pytest.raises(LocalWhisperModelUnavailable, match="sentence-aware cuts are unavailable"):
+        WhisperTranscriber(model_size="base")._get_model()
+
+
+def test_explicit_local_whisper_weights_are_loaded_by_path(tmp_path, monkeypatch):
+    import whisper
+
+    model_file = tmp_path / "custom.pt"
+    model_file.write_bytes(b"local test fixture")
+    seen = []
+    monkeypatch.setattr(whisper, "load_model", lambda path: seen.append(path) or object())
+    transcriber = WhisperTranscriber(model_size=str(model_file))
+    assert transcriber._get_model() is transcriber._get_model()
+    assert seen == [str(model_file)]
 
 
 def test_caption_generator_to_srt():

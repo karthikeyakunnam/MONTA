@@ -70,7 +70,8 @@ class VideoIntelligenceTeam:
         max_signal_frames: int = 240,
         signal_width: int = 320,
         keyframe_width: int = 512,
-        max_frame_evidence: int = 6,
+        max_frame_evidence: int = 12,
+        frame_evidence_interval_s: float = 3.0,
         calibrator=None,
     ):
         self.media = media
@@ -81,11 +82,13 @@ class VideoIntelligenceTeam:
         self.signal_width = signal_width
         self.keyframe_width = keyframe_width
         self.max_frame_evidence = max_frame_evidence
+        self.frame_evidence_interval_s = frame_evidence_interval_s
         self.calibrator = calibrator
 
     def cache_key(self, meta: TechnicalMetadata) -> str:
         vision_id = self.vision.model_id if self.vision else "none"
-        return f"{meta.fingerprint}|{SIGNAL_VERSION}|{FUSION_VERSION}|frame-evidence.v1|{vision_id}"
+        return (f"{meta.fingerprint}|{SIGNAL_VERSION}|{FUSION_VERSION}|frame-evidence.v2:"
+                f"{self.max_frame_evidence}:{self.frame_evidence_interval_s}|{vision_id}")
 
     async def analyze(self, meta: TechnicalMetadata) -> ClipIntelligence:
         with span("clip.analyze", duration_s=round(meta.duration_s, 2)) as sp:
@@ -123,11 +126,20 @@ class VideoIntelligenceTeam:
             try:
                 images = await self.media.keyframes(meta, times, width=self.keyframe_width)
                 observation, arbitration = await self.vision.observe_with_arbitration(meta, images, times)
-                describe_frame = getattr(self.vision, "describe_frame", None)
-                if describe_frame is not None and self.max_frame_evidence > 0:
-                    count = min(self.max_frame_evidence, max(1, math.ceil(meta.duration_s / 4)))
-                    frame_times = [round(meta.duration_s * (index + 0.5) / count, 3)
-                                   for index in range(count)]
+            except (ProviderError, MediaToolError, asyncio.TimeoutError) as e:
+                logger.warning("vision analysis failed for %s: %s", meta.clip_id, e)
+                degraded = (f"vision failed: {type(e).__name__}: {e}",)
+                m.VISION_DEGRADED.inc(reason=type(e).__name__)
+            describe_frame = getattr(self.vision, "describe_frame", None)
+            if describe_frame is not None and self.max_frame_evidence > 0:
+                # Short social actions can occur between three-second samples.
+                # Bound local inference while retaining roughly 1.5-second
+                # coverage on short clips and source-local timestamps.
+                count = min(self.max_frame_evidence,
+                            max(1, math.ceil(meta.duration_s / self.frame_evidence_interval_s)))
+                frame_times = [round(meta.duration_s * (index + 0.5) / count, 3)
+                               for index in range(count)]
+                try:
                     frame_images = await self.media.keyframes(meta, frame_times, width=self.keyframe_width)
                     if len(frame_images) != len(frame_times):
                         degraded = (*degraded, "frame evidence incomplete: source frame extraction returned fewer images")
@@ -144,10 +156,8 @@ class VideoIntelligenceTeam:
                                 else:
                                     degraded = (*degraded, f"frame evidence at {at:.2f}s failed: "
                                                 f"{type(error).__name__}: {error}")
-            except (ProviderError, MediaToolError, asyncio.TimeoutError) as e:
-                logger.warning("vision analysis failed for %s: %s", meta.clip_id, e)
-                degraded = (f"vision failed: {type(e).__name__}: {e}",)
-                m.VISION_DEGRADED.inc(reason=type(e).__name__)
+                except (MediaToolError, asyncio.TimeoutError) as error:
+                    degraded = (*degraded, f"frame evidence extraction failed: {type(error).__name__}: {error}")
 
         result = fuse(meta, signals, observation, vision_model=self.vision.model_id if self.vision else None, degraded=degraded)
         if frame_evidence:

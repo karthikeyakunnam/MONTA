@@ -29,7 +29,7 @@ Warnings:
 
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from shared.contracts.clip import ClipIntelligence
 from shared.contracts.story import (
@@ -62,6 +62,7 @@ class ValidationConfig:
     profile: PatternValidation = field(default_factory=PatternValidation)
     base_energy_jump: Mapping[Pace, float] = field(default_factory=lambda: dict(BASE_ENERGY_JUMP))
     epsilon: float = EPSILON
+    explicit_scene_order: bool = False
 
     @classmethod
     def for_pattern(cls, pattern_id: str, profile: PatternValidation) -> "ValidationConfig":
@@ -88,8 +89,9 @@ class TimelineValidator:
     def validate_plan(self, plan: StoryPlan, clips: Mapping[str, ClipIntelligence]) -> ValidationReport:
         acts = [ActSpec(a.act_id, a.energy_direction) for a in plan.reasoning.acts]
         rejected = {d.clip_id for d in plan.reasoning.clip_decisions if not d.selected}
+        config = replace(self.config_for(plan.story_pattern), explicit_scene_order=plan.explicit_scene_order)
         return self.validate(plan.timeline, acts, clips, plan.pace.value, rejected=rejected,
-                             config=self.config_for(plan.story_pattern), target_duration_s=plan.target_duration_s)
+                             config=config, target_duration_s=plan.target_duration_s)
 
     def validate(
         self,
@@ -167,7 +169,8 @@ class TimelineValidator:
             if jump > limit + 1e-9:
                 add(ValidationRule.NO_ABRUPT_ENERGY_SPIKES,
                     f"energy jumps {prev.energy:.1f} → {cur.energy:.1f} (Δ{jump:.1f} > {limit:.1f} for {pace.value} {c.profile_name})",
-                    [prev.index, cur.index], [prev.clip_id, cur.clip_id])
+                    [prev.index, cur.index], [prev.clip_id, cur.clip_id],
+                    severity="warning" if c.explicit_scene_order else "error")
 
         run: list[TimelineSegment] = []
         for s in segs + [None]:
@@ -196,13 +199,15 @@ class TimelineValidator:
             ok, why = self._direction_ok(a.direction, energies, prof)
             if not ok:
                 add(ValidationRule.ACT_EMOTIONAL_PROGRESSION, f"act '{a.act_id}' should {a.direction}: {why}",
-                    [s.index for s in act_segs], [s.clip_id for s in act_segs])
+                    [s.index for s in act_segs], [s.clip_id for s in act_segs],
+                    severity="warning" if c.explicit_scene_order else "error")
             mean = sum(energies) / len(energies)
             emotion = self._dominant_emotion(act_segs, clips)
             if prev_mean is not None and abs(mean - prev_mean) < prof.min_act_energy_delta and emotion == prev_emotion:
                 add(ValidationRule.ACT_EMOTIONAL_PROGRESSION,
                     f"act '{a.act_id}' repeats the previous act (energy {mean:.1f} vs {prev_mean:.1f}, same emotion)",
-                    [s.index for s in act_segs], [s.clip_id for s in act_segs])
+                    [s.index for s in act_segs], [s.clip_id for s in act_segs],
+                    severity="warning" if c.explicit_scene_order else "error")
             prev_mean, prev_emotion = mean, emotion
 
         if target_duration_s and segs:

@@ -212,6 +212,7 @@ export interface TimelineArtifact {
       checks: Array<{ name: string; status: string; detail: string; evidence: Record<string, unknown> }>;
     };
     timeline_validation?: { is_valid: boolean; errors: string[]; warnings: string[] };
+    speech_alignment?: { status: 'unavailable' | 'blocked' | 'partial' | 'aligned' | 'user_override' | 'verified'; reason: string };
   };
 }
 

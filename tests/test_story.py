@@ -81,6 +81,40 @@ async def test_design_is_deterministic():
     assert a.act_assignments == b.act_assignments and [s.end for s in a.timeline] == [s.end for s in b.timeline]
 
 
+async def test_explicit_scene_order_survives_story_design_and_revalidation():
+    from shared.contracts.base import revalidate
+    from shared.contracts.clip import FrameEvidence
+
+    def observed(clip_id, energy, rows):
+        return revalidate(
+            make_clip(clip_id, energy, duration=20),
+            frame_evidence=tuple(FrameEvidence(time_s=t, description=description, model_id="local:test")
+                                 for t, description in rows),
+        )
+
+    clips = [
+        observed("signs_and_stage", 9, [
+            (2, "A sign outside an event building"), (5, "A banner by the building"),
+            (12, "People standing on stage"), (16, "An audience watches the stage"),
+        ]),
+        observed("greetings_and_speech", 3, [
+            (2, "Two people greet each other"), (5, "A smiling group exchange greetings"),
+            (12, "A speaker at a podium"), (16, "A man speaking behind the podium"),
+        ]),
+    ]
+    prompt = ("Open on venue signage, develop through greetings, show stage interaction, "
+              "and end with podium speaker. Make a 20 second event video.")
+    plan = await StoryArchitect().design(make_pack(prompt, clips))
+    assert plan.explicit_scene_order
+    assert [shot.clip_id for shot in plan.timeline] == [
+        "signs_and_stage", "greetings_and_speech", "signs_and_stage", "greetings_and_speech"]
+    assert plan.timeline[0].source_out <= plan.timeline[2].source_in
+    assert plan.timeline[1].source_out <= plan.timeline[3].source_in
+    assert any(v.rule == ValidationRule.NO_ABRUPT_ENERGY_SPIKES and v.severity == "warning"
+               for v in plan.validation.violations)
+    assert TimelineValidator().validate_plan(plan, {c.clip_id: c for c in clips}).passed
+
+
 @pytest.mark.parametrize("prompt,clips,expected", [
     ("our wedding day, emotional and romantic, vows", [
         make_clip("w1", 3, 8, Emotion.ROMANTIC, ((StoryRole.PREPARATION, .8),), activities=("bride getting ready",)),
