@@ -35,6 +35,7 @@ def _midword_boundary(point_ms: int, segments: list[dict], edge: str,
 def align_timeline_to_speech(timeline: TimelineIR, transcripts: dict[str, dict],
                              source_durations_ms: dict[str, int],
                              max_shift_ms: int = 400,
+                             max_final_phrase_extension_ms: int = 1200,
                              preserve_cuts: bool = False) -> SpeechPlanResult:
     """Snap cuts only to nearby evidenced phrase/word edges; retain plan duration/order.
 
@@ -44,7 +45,7 @@ def align_timeline_to_speech(timeline: TimelineIR, transcripts: dict[str, dict],
     """
     adjusted = []
     decisions: list[dict[str, Any]] = []
-    for shot in timeline.video_segments:
+    for index, shot in enumerate(timeline.video_segments):
         if preserve_cuts:
             adjusted.append(shot)
             decisions.append({"segment_id": shot.segment_id, "status": "user_override",
@@ -63,6 +64,18 @@ def align_timeline_to_speech(timeline: TimelineIR, transcripts: dict[str, dict],
         for edge, point in (("start", start), ("end", end)):
             candidate = _near_phrase_boundary(point, segments, edge, max_shift_ms)
             origin = "phrase"
+            if candidate is None and edge == "end" and index == len(timeline.video_segments) - 1:
+                # A final sentence can finish just beyond the target out point.
+                # Allow a slightly faster ending only when the full phrase fits
+                # the source and changes playback speed by no more than 6%.
+                extended = _near_phrase_boundary(point, segments, edge,
+                                                 max_final_phrase_extension_ms)
+                original_speed = shot.source_duration_ms / shot.timeline_duration_ms
+                if (extended is not None and extended > point and extended <= source_limit
+                        and abs(((extended - start) / shot.timeline_duration_ms)
+                                / original_speed - 1) <= 0.06):
+                    candidate = extended
+                    origin = "final_phrase"
             if candidate is None:
                 candidate = _midword_boundary(point, segments, edge, max_shift_ms)
                 origin = "word"
@@ -85,8 +98,10 @@ def align_timeline_to_speech(timeline: TimelineIR, transcripts: dict[str, dict],
                           "original_in_ms": shot.source_in_ms, "original_out_ms": shot.source_out_ms,
                           "source_in_ms": start, "source_out_ms": end,
                           "start_boundary": edges.get("start"), "end_boundary": edges.get("end"),
-                          "status": "aligned" if all(value != "unresolved" for value in edges.values())
-                          else "partial"})
+                          "playback_speed_before": shot.speed,
+                          "playback_speed_after": adjusted[-1].speed,
+                          "status": "aligned" if all(value in {"phrase", "final_phrase"}
+                                                     for value in edges.values()) else "partial"})
     candidate = revalidate(timeline, video_segments=tuple(adjusted), caption_cues=())
     cues: list[CaptionCueIR] = []
     for shot in candidate.video_segments:

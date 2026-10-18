@@ -101,7 +101,7 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.0-flash"
 
     # Whisper
-    WHISPER_MODEL_SIZE: str = "base"
+    WHISPER_MODEL_SIZE: str = "large-v3"
 
     # Render
     RENDER_RESOLUTIONS: str = "720p,1080p,4k"

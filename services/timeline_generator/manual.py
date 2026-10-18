@@ -51,6 +51,7 @@ class ManualTimeline(BaseModel):
     music_volume: float | None = Field(None, ge=0, le=4)
     music_ducking: bool | None = None
     captions: tuple[ManualCaption, ...] | None = Field(None, max_length=200)
+    speech_align: bool = False
 
     @model_validator(mode="after")
     def check_captions(self):

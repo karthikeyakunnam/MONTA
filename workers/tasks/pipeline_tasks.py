@@ -539,7 +539,9 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 if manual_captions and caption_style == "None":
                     raise ValueError("Manual captions require a caption style; select one in Revise edit")
                 speech_alignment = {"status": "unavailable", "reason": "No source-level transcript was available."}
-                if not edit_options.get("manual_timeline") or (caption_style != "None" and manual_captions is None):
+                manual_speech_align = bool((edit_options.get("manual_timeline") or {}).get("speech_align"))
+                if (not edit_options.get("manual_timeline") or manual_speech_align
+                        or (caption_style != "None" and manual_captions is None)):
                     from speech.transcriber import LocalWhisperModelUnavailable, WhisperTranscriber
 
                     transcriber = WhisperTranscriber(model_size=settings.WHISPER_MODEL_SIZE,
@@ -570,7 +572,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                                             for item in result.context_pack.video_metadata}
                         speech_plan = align_timeline_to_speech(
                             timeline_ir, transcripts, source_durations,
-                            preserve_cuts=bool(edit_options.get("manual_timeline")),
+                            preserve_cuts=bool(edit_options.get("manual_timeline")) and not manual_speech_align,
                         )
                         EditPlanValidator().validate(
                             speech_plan.timeline, source_durations_ms=source_durations,
@@ -765,7 +767,6 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 failed_checks = {item["name"] for item in render_quality["checks"]
                                  if item["status"] == "failed"}
                 if (failed_checks == {"audio_clipping"}
-                        and not render_file.name.startswith("captioned_")
                         and timeline_ir.audio_peak_limit is None):
                     from shared.contracts.base import revalidate
                     from services.edit_executor.validator import EditPlanValidator
@@ -783,11 +784,30 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                         timeline=repaired_timeline,
                     )
                     if repaired_result.success and repaired_result.validation_passed:
+                        checked_file = repaired_file
+                        checked_result = repaired_result
+                        repaired_captions = render_file.name.startswith("captioned_")
+                        if repaired_captions:
+                            from services.render_farm.output_validator import OutputValidator
+
+                            checked_file = render_dir / f"repaired_captioned_{job_id}.mp4"
+                            await caption_engine.burn_captions(
+                                str(repaired_file), captions, str(checked_file), style=caption_style,
+                                width=repaired_result.width, height=repaired_result.height,
+                            )
+                            checked_result = await OutputValidator(
+                                ffprobe_bin=settings.FFPROBE_PATH,
+                            ).validate(checked_file, repaired_timeline, repaired_result.render_time_s,
+                                       repaired_result.encoder_used)
+                            if not checked_result.success or not checked_result.validation_passed:
+                                raise RuntimeError(checked_result.error_message or
+                                                   "repaired captioned video failed validation")
                         repaired_quality = await inspect_render(
-                            str(repaired_file), repaired_timeline, ffmpeg_bin=settings.FFMPEG_PATH,
+                            str(checked_file), repaired_timeline, ffmpeg_bin=settings.FFMPEG_PATH,
                             storage_root=str(settings.storage_root_path),
-                            actual_duration_s=repaired_result.duration_s,
+                            actual_duration_s=checked_result.duration_s,
                             scene_beats=render_brief.scene_beats,
+                            captions_burned=repaired_captions,
                         )
                         repaired_quality["repair_attempt"] = {
                             "cause": "audio_clipping", "timeline_change": "audio_peak_limit=0.6",
@@ -797,8 +817,8 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                         }
                         render_quality = repaired_quality
                         if not any(item["status"] == "failed" for item in repaired_quality["checks"]):
-                            render_file = repaired_file
-                            render_result = repaired_result
+                            render_file = checked_file
+                            render_result = checked_result
                             timeline_ir = repaired_timeline
                             timeline_row.entries = repaired_timeline.model_dump(mode="json")
                     else:

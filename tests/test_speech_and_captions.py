@@ -77,6 +77,22 @@ def test_caption_engine_creates_overlay_image(tmp_path):
     assert out_img.stat().st_size > 1000
 
 
+def test_long_source_caption_stays_inside_vertical_safe_area(tmp_path):
+    from PIL import Image
+
+    engine = CaptionEngine(temp_dir=str(tmp_path))
+    overlay = engine.create_overlay_image(
+        "And to begin with, I have this habit of appreciating the food that someone makes for me, irrespective",
+        width=1080, height=1920, style=CaptionStyle.MINIMAL,
+        output_path=str(tmp_path / "long_caption.png"),
+    )
+    with Image.open(overlay) as image:
+        bounds = image.getchannel("A").getbbox()
+    assert bounds is not None
+    assert bounds[0] >= 50 and bounds[2] <= 1030
+    assert bounds[1] >= 1056 and bounds[3] <= 1920
+
+
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
 async def test_caption_engine_burns_captions_into_video(tmp_path):
     # 1. Create a 3-second test video

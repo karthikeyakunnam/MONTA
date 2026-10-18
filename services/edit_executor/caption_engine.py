@@ -166,36 +166,51 @@ class CaptionEngine:
         except Exception:
             font = ImageFont.load_default()
 
-        # Measure text bounds
-        bbox = draw.textbbox((0, 0), display_text, font=font)
-        text_w = bbox[2] - bbox[0]
-        text_h = bbox[3] - bbox[1]
-
-        x = (width - text_w) / 2.0
+        # Wrap against the actual rendered font. Long ASR segments must not be
+        # drawn beyond the video edges (Pillow silently clips those pixels).
+        safe_width = width * 0.88
+        words = display_text.split()
+        lines: list[str] = []
+        current = ""
+        for word in words:
+            candidate = f"{current} {word}" if current else word
+            if current and draw.textlength(candidate, font=font) > safe_width:
+                lines.append(current)
+                current = word
+            else:
+                current = candidate
+        if current:
+            lines.append(current)
+        if any(draw.textlength(line, font=font) > safe_width for line in lines):
+            raise ValueError("Caption contains a word wider than the safe video area")
+        line_spacing = max(4, round(font_size * 0.15))
+        line_boxes = [draw.textbbox((0, 0), line, font=font, stroke_width=stroke_width)
+                      for line in lines]
+        line_heights = [box[3] - box[1] for box in line_boxes]
+        text_h = sum(line_heights) + line_spacing * max(0, len(lines) - 1)
+        if text_h > height * 0.35:
+            raise ValueError("Caption is too long for the safe video area")
         y = height - bottom_margin - text_h
+        if y < height * 0.55:
+            raise ValueError("Caption overlaps the subject-safe area")
 
         # Draw background pill if requested
         if spec.get("bg_pill"):
             pad_x = int(round(16 * scale))
             pad_y = int(round(8 * scale))
-            pill_box = (
-                x - pad_x,
-                y - pad_y,
-                x + text_w + pad_x,
-                y + text_h + pad_y,
-            )
+            widest = max((draw.textlength(line, font=font) for line in lines), default=0)
+            pill_box = ((width - widest) / 2 - pad_x, y - pad_y,
+                        (width + widest) / 2 + pad_x, y + text_h + pad_y)
             radius = int(round(8 * scale))
             draw.rounded_rectangle(pill_box, radius=radius, fill=spec["bg_pill"])
 
         # Draw stroke and text
-        draw.text(
-            (x, y),
-            display_text,
-            font=font,
-            fill=spec["text_color"],
-            stroke_width=stroke_width,
-            stroke_fill=spec["stroke_color"],
-        )
+        line_y = y
+        for line, line_height in zip(lines, line_heights):
+            draw.text(((width - draw.textlength(line, font=font)) / 2, line_y), line,
+                      font=font, fill=spec["text_color"], stroke_width=stroke_width,
+                      stroke_fill=spec["stroke_color"])
+            line_y += line_height + line_spacing
 
         if not output_path:
             out_file = Path(self.temp_dir) / f"cap_overlay_{os.getpid()}_{id(text)}.png"

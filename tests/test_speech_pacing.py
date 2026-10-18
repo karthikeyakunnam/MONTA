@@ -24,6 +24,17 @@ def test_worker_config_selects_explicit_base_without_fallback(monkeypatch):
     assert WhisperTranscriber(large.WHISPER_MODEL_SIZE).model_path().name == "large-v3.pt"
 
 
+def test_manual_speech_alignment_requires_explicit_opt_in():
+    from app.schemas.project import EditOptions
+
+    shot = {"clip_id": "source", "source_in_ms": 0, "source_out_ms": 22500}
+    default = EditOptions.model_validate({"manual_timeline": {"shots": [shot]}})
+    opted = EditOptions.model_validate({"manual_timeline": {"shots": [shot], "speech_align": True}})
+    assert default.manual_timeline.speech_align is False
+    assert opted.manual_timeline.speech_align is True
+    assert opted.model_dump(mode="json")["manual_timeline"]["speech_align"] is True
+
+
 def _timeline(path: str, *, end: int = 4000) -> TimelineIR:
     return TimelineIR(project_id="fixture", video_segments=(
         VideoSegmentIR(segment_id="speech", clip_id="source", source_path=path,
@@ -67,6 +78,44 @@ def test_midword_cut_moves_to_safe_word_edge_and_unresolved_is_reported():
     assert result.decisions[0]["end_boundary"] == "unresolved"
     assert result.status == "partial"
     assert [cue.text for cue in result.timeline.caption_cues] == ["phrase"]
+
+
+def test_real_case_fixture_keeps_final_phrase_with_bounded_speed_change():
+    # Timestamp fixture reproduces the observed base transcript boundary:
+    # the 22.5s out point lies inside a 22.48–22.70s word; phrase ends 23.64s.
+    source = "/source.mov"
+    timeline = TimelineIR(project_id="fixture", video_segments=(
+        VideoSegmentIR(segment_id="speech", clip_id="source", source_path=source,
+                       source_in_ms=0, source_out_ms=22500,
+                       timeline_start_ms=0, timeline_end_ms=22500),
+    ), total_duration_ms=22500)
+    transcript = {"segments": [
+        {"start": 0.0, "end": 3.8, "text": "Opening phrase."},
+        {"start": 19.68, "end": 23.64, "text": "Complete final phrase.",
+         "words": [{"start": 22.48, "end": 22.7, "text": "a"}]},
+    ]}
+    result = align_timeline_to_speech(timeline, {source: transcript}, {"source": 47248})
+    assert result.timeline.video_segments[0].source_out_ms == 23640
+    assert result.timeline.total_duration_ms == 22500
+    assert result.decisions[0]["end_boundary"] == "final_phrase"
+    assert result.decisions[0]["playback_speed_after"] == pytest.approx(1.0507, abs=0.0001)
+    assert result.status == "aligned"
+    assert result.timeline.caption_cues[-1].end_ms == 22500
+
+
+def test_word_safe_cut_does_not_claim_phrase_alignment():
+    source = "/source.mov"
+    timeline = TimelineIR(project_id="fixture", video_segments=(
+        VideoSegmentIR(segment_id="speech", clip_id="source", source_path=source,
+                       source_in_ms=0, source_out_ms=22500,
+                       timeline_start_ms=0, timeline_end_ms=22500),
+    ), total_duration_ms=22500)
+    transcript = {"segments": [{"start": 0, "end": 25, "text": "Long phrase",
+                                "words": [{"start": 22.48, "end": 22.7, "text": "a"}]}]}
+    result = align_timeline_to_speech(timeline, {source: transcript}, {"source": 26000})
+    assert result.timeline.video_segments[0].source_out_ms == 22700
+    assert result.status == "partial"
+    assert result.decisions[0]["end_boundary"] == "word"
 
 
 def test_missing_transcript_preserves_every_cut():
