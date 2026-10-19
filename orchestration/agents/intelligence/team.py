@@ -87,8 +87,106 @@ class VideoIntelligenceTeam:
 
     def cache_key(self, meta: TechnicalMetadata) -> str:
         vision_id = self.vision.model_id if self.vision else "none"
-        return (f"{meta.fingerprint}|{SIGNAL_VERSION}|{FUSION_VERSION}|frame-evidence.v2:"
+        return (f"{meta.fingerprint}|{SIGNAL_VERSION}|{FUSION_VERSION}|frame-evidence.v3:"
                 f"{self.max_frame_evidence}:{self.frame_evidence_interval_s}|{vision_id}")
+
+    async def enrich_short_scene_evidence(self, meta: TechnicalMetadata,
+                                          clip: ClipIntelligence, beats) -> ClipIntelligence:
+        """Sample short measured shots near relevant observations, with local vision.
+
+        An existing sparse sample may land on only one frame of a 1–2s shot.
+        Additional source-local observations can corroborate it; a hard cut
+        alone never supplies a semantic label. Work is bounded and only used
+        for explicit ordered scene beats when the ordinary plan is infeasible.
+        """
+        describe = getattr(self.vision, "describe_frame", None)
+        if describe is None or not clip.scene_cut_times_s:
+            return clip
+        from orchestration.agents.story.beat_matching import (
+            _candidates, _concepts, _context_candidates, _greeting_gesture,
+            _interpersonal_action, _requested,
+        )
+
+        requested = [_requested(beat.description) for beat in beats]
+        covered = []
+        for index, beat in enumerate(beats):
+            anchors = _candidates(index, beat, {clip.clip_id: clip}, None)
+            covered.extend((*anchors, *_context_candidates(index, beat,
+                                                              {clip.clip_id: clip}, anchors)))
+        bounds = (0.0, *sorted(cut for cut in clip.scene_cut_times_s
+                               if 0 < cut < meta.duration_s), meta.duration_s)
+        spans = []
+        observations = tuple(clip.frame_evidence)
+        for index, (start, end) in enumerate(zip(bounds, bounds[1:])):
+            if end - start < 0.75:
+                continue
+            here = [item for item in observations if start <= item.time_s < end]
+            if any(start <= item.source_in_s < end for item in covered):
+                continue
+            nearby = [item for item in observations
+                      if start - 1.75 <= item.time_s < end + 1.75]
+            beat_scores = []
+            for need in requested:
+                score = 0
+                for item in nearby:
+                    overlap = len(need & _concepts(item.description))
+                    social = "greeting" in need and (
+                        _greeting_gesture(item.description) or _interpersonal_action(item.description))
+                    proximity = ("greeting" in need and social and item not in here and
+                                 abs(item.time_s - start) <= 0.5)
+                    follows_anchor = (item not in here and any(
+                        anchor.is_anchor and anchor.clip_id == clip.clip_id and
+                        0 <= start - anchor.source_out_s <= 0.5
+                        for anchor in covered))
+                    # A greeting gesture near a measured cut is a reason to
+                    # inspect the next shot, never evidence that it continues.
+                    score = max(score, (2 if item in here else 1) * (overlap + int(social)) +
+                                (2 if proximity or follows_anchor else 0))
+                beat_scores.append(score)
+            if any(beat_scores):
+                spans.append((tuple(beat_scores), index, start, end, here))
+        # Reserve a few nearby measured shots for EACH beat. Otherwise generic
+        # venue/banner observations can consume the entire local inference
+        # budget and leave a brief stage action unsampled.
+        selected = {}
+        for beat_index in range(len(requested)):
+            ranked = sorted((span for span in spans if span[0][beat_index]),
+                            key=lambda span: (-span[0][beat_index], span[1]))
+            for span in ranked[:6]:
+                selected[span[1]] = span
+        ordered = sorted(selected.values(), key=lambda span: (-max(span[0]), span[1]))[:16]
+        times = []
+        for _, _, start, end, existing in ordered:
+            margin = min(0.12, (end - start) * 0.1)
+            candidates = (start + max(margin, (end - start) * 0.3),
+                          start + min(end - start - margin, (end - start) * 0.7))
+            for at in candidates:
+                if len(times) >= 24:
+                    break
+                if (all(abs(at - item.time_s) > 0.15 for item in observations) and
+                        all(abs(at - prior) > 0.15 for prior in times)):
+                    times.append(round(at, 3))
+            if len(times) >= 24:
+                break
+        if not times:
+            return clip
+        augmented = list(observations)
+        degraded = list(clip.provenance.degraded)
+        try:
+            frames = await self.media.keyframes(meta, times, width=self.keyframe_width)
+        except (MediaToolError, asyncio.TimeoutError) as error:
+            degraded.append(f"targeted scene frame extraction failed: {type(error).__name__}: {error}")
+            return revalidate(clip, provenance=revalidate(clip.provenance, degraded=tuple(degraded)))
+        for at, frame in zip(times, frames):
+            try:
+                description = await describe(meta, frame, at)
+                augmented.append(FrameEvidence(time_s=at, description=description,
+                                               model_id=self.vision.model_id))
+            except (ProviderError, MediaToolError, asyncio.TimeoutError) as error:
+                degraded.append(f"targeted scene evidence at {at:.2f}s failed: "
+                                f"{type(error).__name__}: {error}")
+        return revalidate(clip, frame_evidence=tuple(sorted(augmented, key=lambda item: item.time_s)),
+                          provenance=revalidate(clip.provenance, degraded=tuple(degraded)))
 
     async def analyze(self, meta: TechnicalMetadata) -> ClipIntelligence:
         with span("clip.analyze", duration_s=round(meta.duration_s, 2)) as sp:

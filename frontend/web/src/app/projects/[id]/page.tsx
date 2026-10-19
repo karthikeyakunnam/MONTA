@@ -60,7 +60,7 @@ function optionsForRevision(options: EditOptions): EditOptions {
     color_grade: options.color_grade ?? null,
     caption_style: options.caption_style ?? null,
     music_style: options.music_style ?? null,
-    add_music: options.add_music ?? true,
+    add_music: options.add_music ?? null,
     aspect_ratio: options.aspect_ratio ?? null,
     style_preset: options.style_preset ?? null,
     pace: options.pace ?? null,
@@ -109,7 +109,7 @@ export default function ProjectPage() {
   const [revisionPlatform, setRevisionPlatform] = useState('instagram');
   const [revisionOptions, setRevisionOptions] = useState<EditOptions>({
     target_duration_s: null, color_grade: null, caption_style: null, music_style: null,
-    add_music: true, aspect_ratio: null, style_preset: null, pace: null, transition: null,
+    add_music: null, aspect_ratio: null, style_preset: null, pace: null, transition: null,
     transition_duration_ms: null, scale_mode: null, brightness: null, contrast: null,
     saturation: null, gamma: null, shadow_coolness: null, highlight_warmth: null, vignette: null,
     title_position: null,
@@ -365,7 +365,7 @@ export default function ProjectPage() {
     color_grade: null,
     caption_style: null,
     music_style: null,
-    add_music: true,
+    add_music: null,
     aspect_ratio: null,
     style_preset: null, pace: null, transition: null, transition_duration_ms: null,
     scale_mode: null, brightness: null, contrast: null, saturation: null, gamma: null,
@@ -537,10 +537,16 @@ export default function ProjectPage() {
                     {MUSIC_STYLES.map((style) => <option key={style} value={style}>{style}</option>)}
                   </select>
                 </label>
-                <label className="check-field">
-                  <input type="checkbox" checked={revisionOptions.add_music}
-                    onChange={(event) => setRevisionOptions((current) => ({ ...current, add_music: event.target.checked }))} />
-                  <span><strong>Add generated music</strong><small>Mixes with source audio using the existing soundtrack stage.</small></span>
+                <label className="field">
+                  <span>Generated music</span>
+                  <select value={revisionOptions.add_music === null ? 'prompt' : revisionOptions.add_music ? 'on' : 'off'}
+                    onChange={(event) => setRevisionOptions((current) => ({
+                      ...current, add_music: event.target.value === 'prompt' ? null : event.target.value === 'on',
+                    }))}>
+                    <option value="prompt">Follow the brief</option>
+                    <option value="on">Add music</option>
+                    <option value="off">No added music</option>
+                  </select>
                 </label>
               </div>
               <details className="advanced-controls">

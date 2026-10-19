@@ -60,8 +60,13 @@ class DirectorPlanner:
         ))
         tasks.append(TaskSpec(
             task_id="design_story", kind=TaskKind.DESIGN_STORY, agent="story_architect", depends_on=("reconcile_intent",),
-            critical=True, timeout_s=60.0, retry=RetryPolicy(max_attempts=2, base_delay_s=0.5),
-            rationale="Select, adapt and fill a story pattern — the core creative decision.",
+            critical=True,
+            timeout_s=(300.0 if pack.intent.creative_brief.scene_beats and self.vision_enabled else 60.0),
+            retry=RetryPolicy(max_attempts=(1 if pack.intent.creative_brief.scene_beats and self.vision_enabled
+                                            else 2), base_delay_s=0.5),
+            rationale=("Select source-grounded ordered beats, including bounded local corroboration when needed."
+                       if pack.intent.creative_brief.scene_beats else
+                       "Select, adapt and fill a story pattern — the core creative decision."),
         ))
         tasks.append(TaskSpec(
             task_id="validate_story", kind=TaskKind.VALIDATE_STORY, agent="timeline_validator", depends_on=("design_story",),

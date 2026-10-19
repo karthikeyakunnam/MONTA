@@ -351,6 +351,16 @@ class IntentEngine:
                 "evidence": lex.evidence + (llm_ev,),
             }), None
 
+        if dim == L.PACE and any(
+            evidence.source == "prompt" and evidence.span and
+            any(word in evidence.span.casefold().split() for word in
+                ("calm", "slow", "gentle", "unhurried", "fast", "quick", "rapid", "aggressive"))
+            for evidence in lex.evidence
+        ):
+            return revalidate(lex, reasoning=(
+                f"Explicit prompt pacing kept over conflicting model inference '{llm_value}'. "
+                + lex.reasoning), evidence=lex.evidence + (llm_ev,)), None
+
         compatible = any({lex_value, llm_value} <= group for group in L.COMPATIBLE_VALUES.get(dim, []))
         if llm.confidence > lex.confidence:
             winner_value, winner_conf, loser_value, loser_conf = llm.value, llm.confidence, lex_value, lex.confidence

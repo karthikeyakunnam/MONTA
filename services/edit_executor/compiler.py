@@ -328,13 +328,18 @@ class FFmpegCompiler:
             fade_s = min(0.35, duration_s / 2)
             asset_node = f"text_asset_{index}"
             video_node = f"v_text_{index}"
-            filters.append(
+            asset_filter = (
                 f"[{input_index}:v]trim=duration={duration_s:.4f},"
-                f"setpts=PTS-STARTPTS+{start_s:.4f}/TB,format=rgba,"
-                f"fade=t=in:st={start_s:.4f}:d={fade_s:.4f}:alpha=1,"
-                f"fade=t=out:st={max(start_s, end_s - fade_s):.4f}:d={fade_s:.4f}:alpha=1"
-                f"[{asset_node}]"
+                f"setpts=PTS-STARTPTS+{start_s:.4f}/TB,format=rgba"
             )
+            # Prompt-specified exact windows should stay legible throughout
+            # the interval; an implicit fade can make the final frames vanish.
+            if overlay.timing_source != "prompt":
+                asset_filter += (
+                    f",fade=t=in:st={start_s:.4f}:d={fade_s:.4f}:alpha=1"
+                    f",fade=t=out:st={max(start_s, end_s - fade_s):.4f}:d={fade_s:.4f}:alpha=1"
+                )
+            filters.append(f"{asset_filter}[{asset_node}]")
             filters.append(
                 f"[{final_out_v}][{asset_node}]overlay=x=0:y=0:eof_action=pass:"
                 f"enable='between(t,{start_s:.4f},{end_s:.4f})'[{video_node}]"

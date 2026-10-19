@@ -113,7 +113,7 @@ export interface EditOptions {
   color_grade: string | null;
   caption_style: string | null;
   music_style: string | null;
-  add_music: boolean;
+  add_music: boolean | null;
   aspect_ratio?: string | null;
   style_preset?: string | null;
   pace?: string | null;

@@ -35,7 +35,7 @@ from orchestration.agents.director import AgentRegistry, DirectorAgent, Director
 from orchestration.agents.director.executor import EventSink
 from orchestration.agents.intelligence import FFmpegMediaBackend, LRUIntelligenceCache, MediaBackend, MediaToolError, VideoIntelligenceTeam, VisionAnalyzer
 from evaluation.story_judge import HeuristicStoryJudge, StoryJudge
-from orchestration.agents.story import DEFAULT_LIBRARY, PatternLibrary, StoryArchitect, StoryRefiner, TimelineValidator
+from orchestration.agents.story import DEFAULT_LIBRARY, PatternLibrary, StoryArchitect, StoryDesignError, StoryRefiner, TimelineValidator
 from services.context_composer import ContextComposer
 from services.prompt_engine import IntentEngine
 from shared.contracts.clip import ClipIntelligence, ClipSource, TechnicalMetadata
@@ -125,7 +125,63 @@ class MontaPipeline:
         return intent
 
     async def _design_story(self, task: TaskSpec, ctx: ExecutionContext) -> StoryPlan:
-        return await self.architect.design(ctx.pack, avoid_patterns=task.params.get("avoid_patterns", ()))
+        if ctx.pack.intent.creative_brief.scene_beats:
+            # Older persisted analysis contains a clip-wide cut count but no cut
+            # timestamps. Measure boundaries locally before accepting source
+            # windows; retain the existing semantic observations and provenance.
+            from orchestration.agents.intelligence.signals import SIGNAL_VERSION, compute_signals
+            analyzed = dict(ctx.pack.clip_intelligence)
+            for meta in ctx.pack.video_metadata:
+                clip = analyzed.get(meta.clip_id)
+                if clip is None or clip.provenance.signal_version == SIGNAL_VERSION:
+                    continue
+                frames, fps = await self.media.sample_luma(
+                    meta, max_frames=self.team.max_signal_frames, width=self.team.signal_width)
+                signals = await asyncio.to_thread(compute_signals, frames, fps)
+                analyzed[meta.clip_id] = revalidate(
+                    clip, scene_cut_times_s=signals.cut_times_s,
+                    provenance=revalidate(clip.provenance, signal_version=SIGNAL_VERSION),
+                )
+            ctx.pack = revalidate(ctx.pack, clip_intelligence=analyzed)
+        try:
+            return await self.architect.design(ctx.pack, avoid_patterns=task.params.get("avoid_patterns", ()))
+        except StoryDesignError as initial_error:
+            if (not ctx.pack.intent.creative_brief.scene_beats or
+                    getattr(self.team.vision, "describe_frame", None) is None):
+                raise
+            from orchestration.agents.story.beat_matching import _candidates
+            beats = ctx.pack.intent.creative_brief.scene_beats
+            capacities = []
+            for index, beat in enumerate(beats):
+                shots = _candidates(index, beat, ctx.pack.clip_intelligence, None)
+                capacities.append((sum(item.source_out_s - item.source_in_s for item in shots),
+                                   index, beat))
+            # Spend scarce local inference on the least substantiated beats.
+            # The other beats retain their existing measured observations.
+            least_supported = tuple(item[2] for item in sorted(capacities)[:2])
+            # The second pass also revisits adjacent shots for the weak beats:
+            # a verified action may last into the next measured short shot.
+            # Already supported shots are skipped by the sampler.
+            remaining = tuple(beats)
+            last_error = initial_error
+            for focus in (least_supported, remaining):
+                if not focus:
+                    continue
+                enriched = dict(ctx.pack.clip_intelligence)
+                for meta in ctx.pack.video_metadata:
+                    clip = enriched.get(meta.clip_id)
+                    if clip is not None:
+                        enriched[meta.clip_id] = await self.team.enrich_short_scene_evidence(
+                            meta, clip, focus)
+                if enriched == ctx.pack.clip_intelligence:
+                    continue
+                ctx.pack = revalidate(ctx.pack, clip_intelligence=enriched)
+                try:
+                    return await self.architect.design(
+                        ctx.pack, avoid_patterns=task.params.get("avoid_patterns", ()))
+                except StoryDesignError as error:
+                    last_error = error
+            raise last_error
 
     async def _validate_story(self, task: TaskSpec, ctx: ExecutionContext) -> ValidationReport:
         return self.validator.validate_plan(ctx.results["design_story"], ctx.pack.clip_intelligence)
@@ -257,7 +313,14 @@ class MontaPipeline:
             )
 
         reuse_rejected = None
-        if reuse_story_plan is not None and pack.clip_intelligence:
+        if reuse_story_plan is not None and intent.creative_brief.scene_beats and not manual_timeline_override:
+            # An older successful story can still contain a mixed-scene source
+            # range. Replan ordered beats from cached observations and measured
+            # boundaries before another render; explicit user timeline edits
+            # continue through the manual-override path below.
+            reuse_rejected = "ordered visual beats require source-window revalidation"
+        if (reuse_story_plan is not None and pack.clip_intelligence and
+                (not intent.creative_brief.scene_beats or manual_timeline_override)):
             analyzed = pack.clip_intelligence
             reconciled = self.intent_engine.reconcile_with_footage(pack.intent, list(analyzed.values()))
             pack = await self.composer.enrich_with_footage(pack, reconciled, analyzed)

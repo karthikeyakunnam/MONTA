@@ -14,6 +14,29 @@ from tests.conftest import ScriptedProvider, make_clip
 
 lex = LexicalIntentExtractor()
 
+EVENT_ACCEPTANCE_PROMPT = (
+    "Open on venue signage, develop through greetings, show stage interaction, and end with podium speaker. "
+    "Make a 25-second cinematic event recap with calm cuts and natural color. "
+    "Show the exact title 'Oath-Taking Ceremony' in the lower third for the first 3 seconds. "
+    "Keep natural source audio; do not add music or captions."
+)
+
+
+def test_event_brief_retains_explicit_render_constraints():
+    intent = lex.extract(EVENT_ACCEPTANCE_PROMPT)
+    brief = intent.creative_brief
+    assert intent.target_duration_s.value == 25
+    assert [beat.description for beat in brief.scene_beats] == [
+        "venue signage", "greetings", "stage interaction", "podium speaker",
+    ]
+    assert [(item.role, item.text, item.position, item.end_s) for item in brief.text_overlays] == [
+        ("title", "Oath-Taking Ceremony", "lower_third", 3.0),
+    ]
+    assert {(item.category, item.value) for item in brief.directives} >= {
+        ("color", "natural"), ("transition", "cut"), ("audio", "source_audio"),
+        ("audio", "music_off"), ("text", "captions_off"),
+    }
+
 NIKE = "make this feel like nike ad slow start then huge motivation ending use dark colors and aggressive cuts"
 
 
@@ -285,6 +308,19 @@ async def test_llm_pace_without_a_prompt_span_cannot_override_slow_camera_direct
 
     assert intent.pace.value == Pace.SLOW
     assert all(e.span != "fast edit" for e in intent.pace.evidence)
+
+
+async def test_explicit_calm_cuts_survive_conflicting_model_pace():
+    prompt = "Make a 25-second event recap with calm cuts and natural color."
+    llm = ScriptedProvider([_llm_json(pace={
+        "value": "medium", "confidence": 0.95,
+        "reasoning": "typical event recap", "evidence_span": "event recap",
+    })], vision=False)
+
+    intent = await IntentEngine(llm).analyze(prompt)
+
+    assert intent.pace.value == Pace.SLOW
+    assert "Explicit prompt pacing kept" in intent.pace.reasoning
 
 
 async def test_llm_failure_falls_back_to_lexical():

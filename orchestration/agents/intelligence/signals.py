@@ -27,7 +27,7 @@ from shared.contracts.clip import SignalMetrics
 from shared.contracts.explain import clamp
 from shared.contracts.vocab import CameraMotion, Lighting
 
-SIGNAL_VERSION = "signals.v2"
+SIGNAL_VERSION = "signals.v3"
 ENERGY_CURVE_POINTS = 24
 
 
@@ -91,13 +91,22 @@ def compute_signals(frames: np.ndarray, sample_fps: float) -> SignalMetrics:
 
     motion_mean = motion_std = speed = jitter = consistency = 0.0
     axis, cuts, peak_t = "none", 0, 0.0
+    cut_times: tuple[float, ...] = ()
     curve: tuple[float, ...] = ()
     if n >= 2:
         diffs = np.abs(f[1:] - f[:-1]).mean(axis=(1, 2))
         med = float(np.median(diffs))
         mad = float(np.median(np.abs(diffs - med)))
-        cut_mask = diffs > max(0.18, med + 6 * mad + 1e-6)
+        # Source files may already be densely edited montages. The former 6×MAD
+        # threshold missed every visible cut in the event acceptance sources,
+        # despite frame differences around 0.30 at the scene changes. Keep a
+        # substantial absolute floor to avoid treating ordinary small motion
+        # as a boundary; these are conservative discontinuity candidates, not
+        # semantic scene labels.
+        cut_mask = diffs > max(0.22, med + 2.5 * mad + 1e-6)
         cuts = int(cut_mask.sum())
+        cut_times = tuple(round(float(i + 1) / sample_fps, 3)
+                          for i in np.flatnonzero(cut_mask))
         steady = diffs[~cut_mask] if (~cut_mask).any() else diffs
         motion_mean, motion_std = float(steady.mean()), float(steady.std())
 
@@ -125,7 +134,8 @@ def compute_signals(frames: np.ndarray, sample_fps: float) -> SignalMetrics:
         brightness_mean=round(brightness, 4), contrast=round(contrast, 4), clipped_ratio=round(clipped, 4),
         sharpness=round(sharpness, 7), motion_mean=round(motion_mean, 5), motion_std=round(motion_std, 5),
         camera_speed=round(speed, 4), camera_jitter=round(jitter, 4), direction_consistency=round(consistency, 3),
-        dominant_axis=axis, cut_count=cuts, peak_time_s=round(peak_t, 3), energy_curve=curve,
+        dominant_axis=axis, cut_count=cuts, cut_times_s=cut_times,
+        peak_time_s=round(peak_t, 3), energy_curve=curve,
     )
 
 

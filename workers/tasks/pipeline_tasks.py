@@ -373,6 +373,9 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 # --- Layer 8, 9 & 10: Timeline Building & Audio Studio ---
                 publish(Stage.TIMELINE_BUILDING, "Generating timeline and compiling execution plan")
                 style_override = _style_override(edit_options)
+                brief_constraints = _brief_render_constraints(
+                    result.context_pack.intent.creative_brief, edit_options)
+                style_override = {**brief_constraints["style"], **style_override}
                 selected_music = _resolved_music_style(result.context_pack, style_override)
                 segment_crops = await pipeline.detect_segment_crops(result.story, result.context_pack)
                 base_timeline = pipeline.generate_timeline_ir(result.story, result.context_pack,
@@ -383,7 +386,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 audio_tracks = ()
                 try:
                     publish(Stage.TIMELINE_BUILDING, "Composing background score and audio mixing")
-                    if edit_options.get("add_music", True):
+                    if brief_constraints["add_music"]:
                         audio_tracks = await pipeline.build_soundtrack(
                             base_timeline, result.context_pack,
                             style=selected_music,
@@ -454,7 +457,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                                 segment_crops=revised_crops,
                             )
                             revised_audio = ()
-                            if edit_options.get("add_music", True):
+                            if brief_constraints["add_music"]:
                                 revised_audio = await pipeline.build_soundtrack(
                                     revised_base, result.context_pack,
                                     style=selected_music,
@@ -534,8 +537,11 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 manual_captions = (edit_options.get("manual_timeline") or {}).get("captions")
                 caption_style = edit_options.get("caption_style")
                 if caption_style is None:
-                    inferred_caption = result.context_pack.intent.caption_style
-                    caption_style = inferred_caption.value.value if inferred_caption and inferred_caption.value else "None"
+                    if brief_constraints["captions_off"]:
+                        caption_style = "None"
+                    else:
+                        inferred_caption = result.context_pack.intent.caption_style
+                        caption_style = inferred_caption.value.value if inferred_caption and inferred_caption.value else "None"
                 if manual_captions and caption_style == "None":
                     raise ValueError("Manual captions require a caption style; select one in Revise edit")
                 speech_alignment = {"status": "unavailable", "reason": "No source-level transcript was available."}
@@ -859,14 +865,25 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     render_result = ending_outcome.result
                     timeline_ir = ending_outcome.timeline
                     timeline_row.entries = timeline_ir.model_dump(mode="json")
+                from services.render_farm.brief_validator import validate_brief_output
+                brief_validation = validate_brief_output(
+                    render_brief, timeline_ir, render_quality,
+                    requested_duration_s=active_story.requested_duration_s,
+                    captions_burned=render_file.name.startswith("captioned_"),
+                )
                 timeline_row.style_config = {
                     **(timeline_row.style_config or {}), "render_quality": render_quality,
+                    "brief_validation": brief_validation,
                 }
                 await db.commit()
                 if render_quality["status"] == "failed":
                     names = ", ".join(item["name"] for item in render_quality["checks"]
                                       if item["status"] == "failed")
                     raise RuntimeError(f"Rendered MP4 failed visual verification: {names}")
+                if brief_validation["status"] == "failed":
+                    names = ", ".join(item["name"] for item in brief_validation["checks"]
+                                      if item["status"] == "failed")
+                    raise RuntimeError(f"Rendered MP4 failed explicit brief requirements: {names}")
 
                 # --- Layer 6 & 13: Platform Export ---
                 checkpoint.advance_to(TaskStage.EXPORTING)
@@ -1134,6 +1151,45 @@ def _style_override(options: dict) -> dict:
     return override
 
 
+def _brief_render_constraints(brief, options: dict) -> dict:
+    """Apply explicit prompt requirements unless a concrete user setting overrides them."""
+    required = {(item.category, item.value) for item in brief.directives
+                if item.priority == "required"}
+    style = {}
+    if ("color", "natural") in required:
+        style.update(color_grade="natural", brightness=0.0, contrast=1.0,
+                     saturation=1.0, gamma=1.0, shadow_coolness=0.0,
+                     highlight_warmth=0.0, vignette=0.0)
+        if options.get("color_grade") not in (None, "natural"):
+            raise ValueError("Brief requires natural color, but the explicit color_grade setting conflicts")
+    if ("transition", "cut") in required:
+        style["transitions"] = "cut"
+        if options.get("transition") not in (None, "cut"):
+            raise ValueError("Brief requires cuts, but the explicit transition setting conflicts")
+    music_off = ("audio", "music_off") in required
+    music_on = ("audio", "music_on") in required
+    captions_off = ("text", "captions_off") in required
+    if music_off and music_on:
+        raise ValueError("Brief both requires and forbids generated music")
+    if music_off and options.get("add_music") is True:
+        raise ValueError("Brief forbids music, but the explicit add_music setting enables it")
+    if music_on and options.get("add_music") is False:
+        raise ValueError("Brief requires music, but the explicit add_music setting disables it")
+    if music_off and options.get("music_style"):
+        raise ValueError("Brief forbids music, but the explicit music_style setting selects it")
+    if captions_off and options.get("caption_style") not in (None, "None"):
+        raise ValueError("Brief forbids captions, but the explicit caption_style setting enables them")
+    if captions_off and (options.get("manual_timeline") or {}).get("captions"):
+        raise ValueError("Brief forbids captions, but manual caption cues were supplied")
+    required_title_positions = {item.position for item in brief.text_overlays
+                                if item.role == "title" and item.position is not None}
+    if options.get("title_position") and required_title_positions and options["title_position"] not in required_title_positions:
+        raise ValueError("Brief requires a title position that conflicts with the explicit title_position setting")
+    add_music = music_on or options.get("add_music") is True or bool(options.get("music_style"))
+    return {"style": style, "add_music": not music_off and add_music,
+            "captions_off": captions_off}
+
+
 def _resolved_music_style(context_pack, style_override: dict) -> str | None:
     """Resolve the same preset and explicit overrides for soundtrack generation as video style."""
     from services.style_engine.mapper import StyleMapper
@@ -1193,7 +1249,7 @@ def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str
 
     for index, requirement in enumerate(requirements):
         if requirement.role == "title":
-            placed = revalidate(requirement, position=chosen_title_position)
+            placed = revalidate(requirement, position=title_position or requirement.position or chosen_title_position)
         elif requirement.role == "subtitle" and chosen_title_position == "lower_third":
             placed = revalidate(requirement, position="bottom")
         else:

@@ -117,3 +117,5 @@ def test_compiler_burns_prompt_overlay_only_during_its_resolved_window(tmp_path:
     assert "-loop" in command.argv
     assert "noise=alls=2:allf=t+u:all_seed=17" in command.filter_graph
     assert "overlay=x=0:y=0:eof_action=pass:enable='between(t,0.0000,2.5000)'" in command.filter_graph
+    assert "[text_asset_0]" in command.filter_graph
+    assert "fade=t=out" not in command.filter_graph

@@ -508,6 +508,33 @@ class LexicalIntentExtractor:
                                             value=f"scene_beat_{item.order + 1}:{item.description}",
                                             source_span=item.source_span)
                           for item in scene_beats)
+        for match in re.finditer(r"\bnatural\s+colou?r\b", prompt, re.IGNORECASE):
+            directives.append(CreativeDirective(category="color", priority="required",
+                                                value="natural", source_span=match.group(0)))
+        for match in re.finditer(r"\b(?:calm|clean|simple)\s+cuts?\b", prompt, re.IGNORECASE):
+            directives.append(CreativeDirective(category="transition", priority="required",
+                                                value="cut", source_span=match.group(0)))
+        for match in re.finditer(r"\b(?:keep|retain|preserve)\s+(?:the\s+)?(?:natural\s+)?source\s+audio\b",
+                                 prompt, re.IGNORECASE):
+            directives.append(CreativeDirective(category="audio", priority="required",
+                                                value="source_audio", source_span=match.group(0)))
+        for match in re.finditer(r"\b(?:no|do\s+not|don't)\s+(?:(?:add|include|use)\s+)?"
+                                 r"(?:music|captions?)(?:\s+(?:or|and)\s+(?:music|captions?))*\b",
+                                 prompt, re.IGNORECASE):
+            words = set(re.findall(r"[a-z]+", match.group(0).casefold()))
+            if "music" in words:
+                directives.append(CreativeDirective(category="audio", priority="required",
+                                                    value="music_off", source_span=match.group(0)))
+            if "caption" in words or "captions" in words:
+                directives.append(CreativeDirective(category="text", priority="required",
+                                                    value="captions_off", source_span=match.group(0)))
+        for match in re.finditer(r"\b(?:add|include|use)\s+(?:some\s+)?"
+                                 r"(?:background\s+)?music\b", prompt, re.IGNORECASE):
+            lead = prompt[max(0, match.start() - 16):match.start()]
+            if re.search(r"\b(?:do\s+not|don't|no)\s*$", lead, re.IGNORECASE):
+                continue
+            directives.append(CreativeDirective(category="audio", priority="required",
+                                                value="music_on", source_span=match.group(0)))
         return CreativeBrief(
             visual_treatments=tuple(dict.fromkeys(visual_treatments)),
             emotional_tones=tuple(requested_tones),
@@ -585,6 +612,9 @@ class LexicalIntentExtractor:
             position = None
             if role == "title" and re.search(r"\b(centered|center)\b", local_context):
                 position = "center"
+            elif role == "title" and re.search(r"\blower[- ]third\b", prompt[match.end():
+                    min(len(prompt), match.end() + 90)], re.IGNORECASE):
+                position = "lower_third"
             elif role == "subtitle" and re.search(r"\b(underneath|below)\b", local_context):
                 position = "below_title"
             color = "magenta" if re.search(r"\b(magenta|pink)\b", local_context) else (

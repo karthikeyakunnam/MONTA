@@ -44,7 +44,7 @@ class EditOptions(BaseModel):
     include_prior_exports: bool = Field(False, exclude_if=lambda value: value is False)
     caption_style: CaptionStyle | None = Field(None, exclude_if=lambda value: value is None)
     music_style: MusicStyle | None = Field(None, exclude_if=lambda value: value is None)
-    add_music: bool = True
+    add_music: bool | None = Field(None, exclude_if=lambda value: value is None)
     aspect_ratio: Literal["9:16", "16:9", "1:1", "4:5"] | None = Field(
         default=None, exclude_if=lambda value: value is None,
     )

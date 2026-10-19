@@ -95,7 +95,8 @@ async def test_explicit_scene_order_survives_story_design_and_revalidation():
     clips = [
         observed("signs_and_stage", 9, [
             (2, "A sign outside an event building"), (5, "A banner by the building"),
-            (12, "People standing on stage"), (16, "An audience watches the stage"),
+            (12, "Two people greeting each other on stage"),
+            (16, "Two people speaking together on stage"),
         ]),
         observed("greetings_and_speech", 3, [
             (2, "Two people greet each other"), (5, "A smiling group exchange greetings"),
@@ -113,6 +114,29 @@ async def test_explicit_scene_order_survives_story_design_and_revalidation():
     assert any(v.rule == ValidationRule.NO_ABRUPT_ENERGY_SPIKES and v.severity == "warning"
                for v in plan.validation.violations)
     assert TimelineValidator().validate_plan(plan, {c.clip_id: c for c in clips}).passed
+
+
+async def test_short_source_shots_keep_beat_order_and_exact_timeline_duration():
+    from shared.contracts.base import revalidate
+    from shared.contracts.clip import FrameEvidence
+
+    clip = revalidate(make_clip("event", 4, duration=8), scene_cut_times_s=(2, 4, 6),
+                      frame_evidence=tuple(FrameEvidence(time_s=t, description=description,
+                                                         model_id="local:test")
+                                           for t, description in [
+        (0.5, "A venue sign"), (1.5, "A venue banner"),
+        (2.5, "A venue poster"), (3.5, "A venue sign"),
+        (4.5, "A speaker at a podium"), (5.5, "A speaker at a podium"),
+        (6.5, "A man speaking at a podium"), (7.5, "A man speaking at a podium"),
+    ]))
+    prompt = "Open on venue signage and end with podium speaker. Make a 6 second event recap."
+    plan = await StoryArchitect().design(make_pack(prompt, [clip]))
+    assert [segment.purpose for segment in plan.timeline] == [
+        "Requested scene beat 1: venue signage"] * 2 + [
+        "Requested scene beat 2: podium speaker"] * 2
+    assert plan.total_duration_s == pytest.approx(6)
+    assert all(left.end == right.start for left, right in zip(plan.timeline, plan.timeline[1:]))
+    assert TimelineValidator().validate_plan(plan, {clip.clip_id: clip}).passed
 
 
 @pytest.mark.parametrize("prompt,clips,expected", [

@@ -94,18 +94,22 @@ class StoryArchitect:
             timeline_rows = []
             cursor = 0.0
             for index, window in enumerate(windows):
-                act = adapted.acts[min(len(adapted.acts) - 1, index * len(adapted.acts) // len(windows))]
+                act = adapted.acts[min(len(adapted.acts) - 1,
+                                       window.beat_index * len(adapted.acts) // len(scene_beats))]
                 clip = clips[window.clip_id]
                 if clip.clip_id not in act_clips[act.act_id]:
                     act_clips[act.act_id].append(clip.clip_id)
                 fits[clip.clip_id] = assembly.clip_fit(clip, act, emotion)
-                end = (round(adapted.target_duration_s, 3) if index == len(windows) - 1
-                       else round(adapted.target_duration_s * (index + 1) / len(windows), 3))
-                length = end - round(cursor, 3)
-                source_in = round(min(window.source_in_s, clip.duration_s - length), 3)
-                source_out = round(source_in + length, 3)
-                beat = scene_beats[index]
-                if window.evidence_basis == "gesture_and_interaction":
+                source_in = window.source_in_s
+                source_out = window.source_out_s
+                end = round(cursor + source_out - source_in, 3)
+                beat = scene_beats[window.beat_index]
+                if window.evidence_basis == "adjacent_context_observations":
+                    observation_note = (
+                        "This adjacent source shot provides context for the beat, not proof of its required "
+                        "action; another selected shot anchors that action near "
+                    )
+                elif window.evidence_basis == "gesture_and_interaction":
                     observation_note = (
                         "Local frame descriptions show a greeting-related gesture and a separate "
                         "interpersonal action near "
@@ -119,7 +123,7 @@ class StoryArchitect:
                     start=round(cursor, 3), end=end, source_in=source_in, source_out=source_out,
                     energy=assembly.window_energy(clip, source_in, source_out),
                     is_hero=index == len(windows) - 1,
-                    purpose=f"Requested scene beat {index + 1}: {beat.description}",
+                    purpose=f"Requested scene beat {window.beat_index + 1}: {beat.description}",
                     reasoning=(f"Prompt required '{beat.description}'. " + observation_note +
                                f"{window.evidence_times_s[0]:.2f}s and {window.evidence_times_s[1]:.2f}s "
                                f"of this source; interpretation is uncertain and the model observations are unverified. "

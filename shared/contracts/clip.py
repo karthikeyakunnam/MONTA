@@ -86,6 +86,7 @@ class SignalMetrics(BaseModel):
     direction_consistency: float = Field(..., ge=0, le=1)
     dominant_axis: str = Field(..., pattern="^(horizontal|vertical|none)$")
     cut_count: int = Field(..., ge=0)
+    cut_times_s: tuple[float, ...] = Field((), description="Approximate source-relative visual discontinuities from sampled luma")
     peak_time_s: float = Field(..., ge=0)
     energy_curve: tuple[float, ...] = Field((), description="Normalized motion over time, at most 24 points")
 
@@ -317,6 +318,7 @@ class ClipIntelligence(BaseModel):
     story_role_candidates: tuple[RoleCandidate, ...] = ()
     visual_tags: Labels = ()
     frame_evidence: tuple[FrameEvidence, ...] = ()
+    scene_cut_times_s: tuple[float, ...] = Field((), description="Approximate source-relative visual discontinuities; not semantic labels")
     reasoning: NonEmptyText
 
     peak_time_s: float = Field(0.0, ge=0)

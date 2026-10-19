@@ -65,12 +65,13 @@ _SHOT_TYPES = ", ".join(v.value for v in ShotType)
 _EMOTIONS = ", ".join(v.value for v in Emotion)
 _STORY_ROLES = ", ".join(v.value for v in StoryRole)
 
-VLM_DESCRIBE_PROMPT = """Describe what you see in this video frame in detail.
-Focus on: what actions/activities are happening, what objects are visible,
-how many people and what they look like (no names), the camera angle and
-framing, the setting/scene type, the mood/emotion conveyed, and any quality
-issues (blur, overexposure, etc.).
-Be specific and factual. Do not invent things you cannot see."""
+VLM_DESCRIBE_PROMPT = """Describe what is visibly present in this one video frame.
+Start with concrete human actions and body positions: what hands are doing,
+whether people face or interact with one another, and whether someone is
+speaking, presenting, or posing. Then describe salient objects, setting,
+framing, and visible quality problems. Distinguish a visible action from a
+possible interpretation; say when the action is unclear. Do not infer names,
+identities, speech content, or text you cannot clearly read."""
 
 STRUCTURING_SYSTEM_PROMPT = f"""You are a video analysis structuring engine.
 You receive a natural-language description of video frames and must convert it

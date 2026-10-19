@@ -115,6 +115,7 @@ def fuse(
         reasoning=" ".join(reasons),
         peak_time_s=min(signals.peak_time_s, meta.duration_s),
         energy_curve=signals.energy_curve,
+        scene_cut_times_s=signals.cut_times_s,
         usable=usable,
         unusable_reason=why_not,
         provenance=AnalysisProvenance(

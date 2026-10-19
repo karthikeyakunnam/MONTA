@@ -43,7 +43,7 @@ export default function HomePage() {
   const [colorGrade, setColorGrade] = useState('');
   const [captionStyle, setCaptionStyle] = useState('');
   const [musicStyle, setMusicStyle] = useState('');
-  const [addMusic, setAddMusic] = useState(true);
+  const [addMusic, setAddMusic] = useState<boolean | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [createFailure, setCreateFailure] = useState<Failure | null>(null);
 
@@ -174,8 +174,13 @@ export default function HomePage() {
               </select>
             </label>
             <label className="check-field">
-              <input type="checkbox" checked={addMusic} onChange={(e) => setAddMusic(e.target.checked)} />
-              <span><strong>Add generated background music</strong><small>Original clip audio is kept and mixed underneath.</small></span>
+              <span><strong>Generated background music</strong><small>Original clip audio is kept.</small></span>
+              <select value={addMusic === null ? 'prompt' : addMusic ? 'on' : 'off'}
+                onChange={(e) => setAddMusic(e.target.value === 'prompt' ? null : e.target.value === 'on')}>
+                <option value="prompt">Follow the brief</option>
+                <option value="on">Add music</option>
+                <option value="off">No added music</option>
+              </select>
             </label>
           </div>
           <p className="muted" style={{ fontSize: 12.5, marginBottom: 0 }}>Exports are MP4. Platform selection sets the framing and applies that platform’s export profile.</p>

@@ -118,7 +118,7 @@ class StoryToTimelineTranslator:
             if (
                 i == len(story.timeline) - 1
                 and resolved_style.get("ending_highlight_warmth")
-                and not explicit_color.get("highlight_warmth")
+                and "highlight_warmth" not in explicit_color
             ):
                 segment_color = ColorAdjustment.model_validate({
                     **color_adj.model_dump(mode="python"),

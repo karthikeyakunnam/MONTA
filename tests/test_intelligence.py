@@ -61,6 +61,7 @@ def test_cut_detection_and_peak():
     frames = np.concatenate([synthetic_frames("static", n=8), synthetic_frames("dark", n=8)])
     m = compute_signals(frames, 4.0)
     assert m.cut_count == 1
+    assert m.cut_times_s == (2.0,)
     assert m.peak_time_s == pytest.approx(2.0, abs=0.5)
     assert len(m.energy_curve) <= 24
 
@@ -221,6 +222,34 @@ async def test_timestamped_observations_survive_structured_vision_failure():
         await media.probe(ClipSource(clip_id="a", path="/a.mp4")))
     assert len(result.frame_evidence) >= 2
     assert result.provenance.degraded and "structuring model unavailable" in result.provenance.degraded[0]
+
+
+async def test_targeted_short_shot_observations_keep_source_timestamps_and_model_identity():
+    from shared.contracts.base import revalidate
+    from shared.contracts.clip import FrameEvidence
+    from shared.contracts.intent import SceneBeatRequirement
+
+    class LocalFrameVision:
+        model_id = "local:test"
+
+        async def describe_frame(self, meta, frame, time_s):
+            return "A sign beside the venue entrance"
+
+    media = SyntheticMediaBackend({"a": "static"})
+    meta = await media.probe(ClipSource(clip_id="a", path="/a.mp4"))
+    clip = revalidate(fuse(meta, signals("static"), None, vision_model=None),
+                      scene_cut_times_s=(2.0,),
+                      frame_evidence=(FrameEvidence(time_s=0.8, description="A venue banner",
+                                                    model_id="local:original"),))
+    team = VideoIntelligenceTeam(media, vision=LocalFrameVision())
+    beat = SceneBeatRequirement(order=0, description="venue signage", source_span="venue signage")
+    enriched = await team.enrich_short_scene_evidence(meta, clip, (beat,))
+    assert len(enriched.frame_evidence) > len(clip.frame_evidence)
+    assert clip.frame_evidence[0] in enriched.frame_evidence
+    assert all(item.model_id == "local:test" for item in enriched.frame_evidence
+               if item != clip.frame_evidence[0])
+    assert all(0 <= item.time_s <= meta.duration_s for item in enriched.frame_evidence)
+    assert any(item.time_s < 2 and item.model_id == "local:test" for item in enriched.frame_evidence)
 
 
 async def test_vision_requires_capability():
