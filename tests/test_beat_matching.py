@@ -80,6 +80,20 @@ def test_people_present_near_stage_do_not_prove_stage_interaction():
         match_scene_beats((_beat(0, "stage interaction"),), {"event": clip}, 3)
 
 
+def test_source_blur_excludes_middle_of_sign_shot_without_claiming_scene_cut():
+    clip = _clip("event", [(1.5, "Event banner beside road"),
+                           (3.6, "Venue sign beside road"),
+                           (4.4, "Event poster by the venue")], duration=5.5)
+    samples = tuple((round(i * 0.25, 2), 0.002 if 2.75 <= i * 0.25 <= 3 else 0.025)
+                    for i in range(22))
+    clip = revalidate(clip, sharpness_samples=samples)
+    anchors = _candidates(0, _beat(0, "venue signage"), {"event": clip}, None)
+    assert anchors
+    assert all(not (item.source_in_s < 2.75 < item.source_out_s)
+               for item in anchors)
+    assert any(item.source_in_s > 3 and item.source_out_s > 4.4 for item in anchors)
+
+
 def test_stage_person_plus_visible_action_recovers_one_missed_model_description():
     clip = _clip("event", [
         (1.0, "A man standing on stage with a yellow scarf"),
@@ -142,6 +156,20 @@ def test_significance_word_does_not_turn_statue_scene_into_signage():
     ], duration=2)
     with pytest.raises(BeatMatchError):
         match_scene_beats((_beat(0, "venue signage"),), {"event": clip}, 1.84)
+
+
+def test_context_keeps_earlier_evidence_when_last_sample_touches_cut_margin():
+    beat = _beat(0, "stage interaction")
+    clip = _clip("event", [
+        (1.1, "A man speaking on stage"),
+        (1.5, "A speaker addressing people on stage"),
+        (3.3, "People standing around chairs facing the stage"),
+        (4.1, "People at the event stage beside chairs"),
+        (4.94, "More people visible beside the stage"),
+    ], duration=6, cuts=(2, 5))
+    anchors = _candidates(0, beat, {"event": clip}, None)
+    context = _context_candidates(0, beat, {"event": clip}, anchors)
+    assert any(2 < item.source_in_s < item.source_out_s <= 4.92 for item in context)
 
 
 def test_missing_or_single_unverified_scene_observation_blocks_selection():

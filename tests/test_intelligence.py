@@ -7,7 +7,7 @@ import subprocess
 import numpy as np
 import pytest
 
-from orchestration.agents.intelligence import FFmpegMediaBackend, LRUIntelligenceCache, VideoIntelligenceTeam, VisionAnalyzer
+from orchestration.agents.intelligence import FFmpegMediaBackend, FileIntelligenceCache, LRUIntelligenceCache, VideoIntelligenceTeam, VisionAnalyzer
 from orchestration.agents.intelligence.fusion import fuse
 from orchestration.agents.intelligence.media import MediaToolError, display_size, keyframe_times, parse_probe
 from orchestration.agents.intelligence.signals import (
@@ -69,6 +69,19 @@ def test_cut_detection_and_peak():
 def test_compute_signals_rejects_empty():
     with pytest.raises(ValueError):
         compute_signals(np.zeros((0, 4, 4), np.uint8), 4.0)
+
+
+@pytest.mark.asyncio
+async def test_file_intelligence_cache_survives_restart_and_rejects_corruption(tmp_path):
+    ci = fuse(_meta(), signals("static"), None, vision_model=None)
+    first = FileIntelligenceCache(tmp_path)
+    await first.put("source-a|model-v1", ci)
+    second = FileIntelligenceCache(tmp_path)
+    assert await second.get("source-a|model-v1") == ci
+    assert await second.get("source-b|model-v1") is None
+    assert await second.get("source-a|model-v2") is None
+    first._path("source-a|model-v1").write_text("broken json")
+    assert await second.get("source-a|model-v1") is None
 
 
 # ---------------------------------------------------------------- media helpers

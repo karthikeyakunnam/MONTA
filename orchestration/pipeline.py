@@ -18,6 +18,7 @@ import asyncio
 import logging
 import os
 import time
+from pathlib import Path
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -33,7 +34,7 @@ from memory.narrative_memory import (
 )
 from orchestration.agents.director import AgentRegistry, DirectorAgent, DirectorPlanner, ExecutionContext
 from orchestration.agents.director.executor import EventSink
-from orchestration.agents.intelligence import FFmpegMediaBackend, LRUIntelligenceCache, MediaBackend, MediaToolError, VideoIntelligenceTeam, VisionAnalyzer
+from orchestration.agents.intelligence import FFmpegMediaBackend, FileIntelligenceCache, MediaBackend, MediaToolError, VideoIntelligenceTeam, VisionAnalyzer
 from evaluation.story_judge import HeuristicStoryJudge, StoryJudge
 from orchestration.agents.story import DEFAULT_LIBRARY, PatternLibrary, StoryArchitect, StoryDesignError, StoryRefiner, TimelineValidator
 from services.context_composer import ContextComposer
@@ -140,9 +141,34 @@ class MontaPipeline:
                 signals = await asyncio.to_thread(compute_signals, frames, fps)
                 analyzed[meta.clip_id] = revalidate(
                     clip, scene_cut_times_s=signals.cut_times_s,
+                    sharpness_samples=signals.sharpness_samples,
                     provenance=revalidate(clip.provenance, signal_version=SIGNAL_VERSION),
                 )
             ctx.pack = revalidate(ctx.pack, clip_intelligence=analyzed)
+            # Enrichment is expensive and model observations can vary across
+            # worker restarts. Reuse only evidence for the same source/model,
+            # analyzer version, and ordered requested beats.
+            if self.team.cache:
+                beats_key = "|ordered-beats.v1:" + "|".join(
+                    beat.description.casefold().strip()
+                    for beat in ctx.pack.intent.creative_brief.scene_beats)
+                for meta in ctx.pack.video_metadata:
+                    cached = await self.team.cache.get(self.team.cache_key(meta) + beats_key)
+                    current = analyzed.get(meta.clip_id)
+                    if cached is not None and current is not None:
+                        # Keep distinct source frames from both real analyses.
+                        # A second model description of the *same* frame does
+                        # not become independent corroboration.
+                        observations = {item.time_s: item for item in cached.frame_evidence}
+                        for item in current.frame_evidence:
+                            observations.setdefault(item.time_s, item)
+                        if len(observations) > len(current.frame_evidence):
+                            analyzed[meta.clip_id] = revalidate(
+                                current,
+                                frame_evidence=tuple(sorted(
+                                    observations.values(), key=lambda item: item.time_s)),
+                                provenance=revalidate(current.provenance, cache_hit=True))
+                ctx.pack = revalidate(ctx.pack, clip_intelligence=analyzed)
         try:
             return await self.architect.design(ctx.pack, avoid_patterns=task.params.get("avoid_patterns", ()))
         except StoryDesignError as initial_error:
@@ -176,9 +202,19 @@ class MontaPipeline:
                 if enriched == ctx.pack.clip_intelligence:
                     continue
                 ctx.pack = revalidate(ctx.pack, clip_intelligence=enriched)
+                if self.team.cache:
+                    for meta in ctx.pack.video_metadata:
+                        clip = enriched.get(meta.clip_id)
+                        if clip is not None:
+                            # Cache provenance and uncertainty with the raw
+                            # observations even when this plan still fails.
+                            # Future runs may add independent source frames.
+                            await self.team.cache.put(
+                                self.team.cache_key(meta) + beats_key, clip)
                 try:
-                    return await self.architect.design(
+                    story = await self.architect.design(
                         ctx.pack, avoid_patterns=task.params.get("avoid_patterns", ()))
+                    return story
                 except StoryDesignError as error:
                     last_error = error
             raise last_error
@@ -733,7 +769,9 @@ def build_pipeline(
                                    keyframe_width=384 if local_vision_enabled else 512,
                                    max_frame_evidence=16 if local_vision_enabled else 12,
                                    frame_evidence_interval_s=1.5 if local_vision_enabled else 3.0,
-                                   cache=LRUIntelligenceCache(int(os.getenv("MONTA_INTEL_CACHE_SIZE", "10000")))),
+                                   cache=FileIntelligenceCache(Path(os.getenv(
+                                       "MONTA_INTEL_CACHE_DIR",
+                                       str(Path(__file__).resolve().parents[1] / "storage" / "cache" / "intelligence"))))),
         architect=StoryArchitect(library=library, validator=validator, refiner=refiner),
         validator=validator,
         judge=judge,

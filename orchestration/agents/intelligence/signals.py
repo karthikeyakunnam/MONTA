@@ -27,7 +27,7 @@ from shared.contracts.clip import SignalMetrics
 from shared.contracts.explain import clamp
 from shared.contracts.vocab import CameraMotion, Lighting
 
-SIGNAL_VERSION = "signals.v3"
+SIGNAL_VERSION = "signals.v4"
 ENERGY_CURVE_POINTS = 24
 
 
@@ -87,7 +87,8 @@ def compute_signals(frames: np.ndarray, sample_fps: float) -> SignalMetrics:
     brightness = float(f.mean())
     contrast = float(f.reshape(n, -1).std(axis=1).mean())
     clipped = float(((f < 0.02) | (f > 0.98)).mean())
-    sharpness = float(np.median(_laplacian_var(f)))
+    sharp_values = _laplacian_var(f)
+    sharpness = float(np.median(sharp_values))
 
     motion_mean = motion_std = speed = jitter = consistency = 0.0
     axis, cuts, peak_t = "none", 0, 0.0
@@ -133,6 +134,8 @@ def compute_signals(frames: np.ndarray, sample_fps: float) -> SignalMetrics:
         signal_version=SIGNAL_VERSION, sample_fps=sample_fps, frames_analyzed=n,
         brightness_mean=round(brightness, 4), contrast=round(contrast, 4), clipped_ratio=round(clipped, 4),
         sharpness=round(sharpness, 7), motion_mean=round(motion_mean, 5), motion_std=round(motion_std, 5),
+        sharpness_samples=tuple((round(i / sample_fps, 3), round(float(value), 7))
+                                for i, value in enumerate(sharp_values)),
         camera_speed=round(speed, 4), camera_jitter=round(jitter, 4), direction_consistency=round(consistency, 3),
         dominant_axis=axis, cut_count=cuts, cut_times_s=cut_times,
         peak_time_s=round(peak_t, 3), energy_curve=curve,

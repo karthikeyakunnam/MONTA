@@ -110,18 +110,27 @@ async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
             checks.append({"name": f"text:{overlay.overlay_id}", "status": "unavailable",
                            "detail": "Overlay has no opaque pixels to compare", "evidence": {"text": overlay.text}})
             continue
-        at = (overlay.start_ms + overlay.end_ms) / 2000
-        frame = _image((await media.keyframes(meta, [at], width=timeline.width))[0])
-        if frame.shape != rgba.shape[:2] + (3,):
+        start_s, end_s = overlay.start_ms / 1000, overlay.end_ms / 1000
+        midpoint = (start_s + end_s) / 2
+        times = [midpoint]
+        if overlay.timing_source == "prompt" and end_s - start_s >= 0.5:
+            times = [start_s + 0.2, midpoint, end_s - 0.1]
+        frames = [_image(item) for item in await media.keyframes(meta, times, width=timeline.width)]
+        if any(frame.shape != rgba.shape[:2] + (3,) for frame in frames):
             checks.append({"name": f"text:{overlay.overlay_id}", "status": "unavailable",
                            "detail": "Decoded frame size differs from overlay asset", "evidence": {"text": overlay.text}})
             continue
-        delta = np.abs(frame[mask].astype(np.int16) - rgba[:, :, :3][mask].astype(np.int16)).mean(axis=1)
-        match = float(np.mean(delta < 40))
+        matches = []
+        for frame in frames:
+            delta = np.abs(frame[mask].astype(np.int16) - rgba[:, :, :3][mask].astype(np.int16)).mean(axis=1)
+            matches.append(float(np.mean(delta < 40)))
+        match = min(matches)
         checks.append({"name": f"text:{overlay.overlay_id}",
                        "status": "passed" if match >= 0.70 else "failed",
-                       "detail": "Compared opaque text pixels in the encoded MP4 with the exact rasterized text asset",
-                       "evidence": {"text": overlay.text, "sample_time_s": round(at, 3),
+                       "detail": "Compared opaque text pixels at requested times in the encoded MP4 with the exact rasterized text asset",
+                       "evidence": {"text": overlay.text, "sample_time_s": round(midpoint, 3),
+                                    "samples": [{"at_s": round(at, 3), "matching_pixel_fraction": round(value, 3)}
+                                                for at, value in zip(times, matches)],
                                     "matching_pixel_fraction": round(match, 3),
                                     "opaque_pixels": int(mask.sum())}})
 

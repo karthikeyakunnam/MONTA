@@ -15,10 +15,14 @@ model), so re-uploads and re-edits of the same footage never pay twice.
 """
 
 import asyncio
+import hashlib
 import logging
 import math
+import os
 import re
+import tempfile
 from collections import OrderedDict
+from pathlib import Path
 from typing import Protocol
 
 from orchestration.agents.intelligence.fusion import FUSION_VERSION, fuse
@@ -57,6 +61,37 @@ class LRUIntelligenceCache:
         self._data.move_to_end(key)
         while len(self._data) > self.max_entries:
             self._data.popitem(last=False)
+
+
+class FileIntelligenceCache:
+    """Local, content-addressed observations shared across worker restarts."""
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root)
+
+    def _path(self, key: str) -> Path:
+        return self.root / (hashlib.sha256(key.encode("utf-8")).hexdigest() + ".json")
+
+    async def get(self, key: str) -> ClipIntelligence | None:
+        path = self._path(key)
+        try:
+            return ClipIntelligence.model_validate_json(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return None
+        except (ValueError, OSError) as error:
+            logger.warning("ignoring invalid intelligence cache entry %s: %s", path, error)
+            return None
+
+    async def put(self, key: str, value: ClipIntelligence) -> None:
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd, temp_name = tempfile.mkstemp(prefix=".intel-", dir=self.root)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(value.model_dump_json())
+            os.replace(temp_name, self._path(key))
+        finally:
+            if os.path.exists(temp_name):
+                os.unlink(temp_name)
 
 
 class VideoIntelligenceTeam:
@@ -103,7 +138,7 @@ class VideoIntelligenceTeam:
         if describe is None or not clip.scene_cut_times_s:
             return clip
         from orchestration.agents.story.beat_matching import (
-            _candidates, _concepts, _context_candidates, _greeting_gesture,
+            _candidates, _concepts, _context_candidates, _greeting_gesture, _usable_spans,
             _interpersonal_action, _requested,
         )
 
@@ -113,11 +148,10 @@ class VideoIntelligenceTeam:
             anchors = _candidates(index, beat, {clip.clip_id: clip}, None)
             covered.extend((*anchors, *_context_candidates(index, beat,
                                                               {clip.clip_id: clip}, anchors)))
-        bounds = (0.0, *sorted(cut for cut in clip.scene_cut_times_s
-                               if 0 < cut < meta.duration_s), meta.duration_s)
+        bounds = _usable_spans(clip)
         spans = []
         observations = tuple(clip.frame_evidence)
-        for index, (start, end) in enumerate(zip(bounds, bounds[1:])):
+        for index, (start, end) in enumerate(bounds):
             if end - start < 0.75:
                 continue
             here = [item for item in observations if start <= item.time_s < end]

@@ -6,6 +6,7 @@ clip-wide scene labels and model-supplied confidence are deliberately ignored.
 """
 
 import re
+import statistics
 from dataclasses import dataclass, replace
 from collections.abc import Mapping, Sequence
 from itertools import combinations
@@ -50,6 +51,35 @@ class BeatWindow:
     relevance: int  # sum of deterministic cue weights, not a confidence/probability
     evidence_basis: str = "two_direct_observations"
     is_anchor: bool = True
+
+
+def _usable_spans(clip: ClipIntelligence) -> tuple[tuple[float, float], ...]:
+    """Measured shots minus brief, unusually soft source frames.
+
+    Blur is a quality exclusion, never semantic evidence or a claimed scene
+    boundary. Older projects without per-frame measurements keep their old
+    behavior until their local signals are refreshed.
+    """
+    bounds = (0.0, *sorted(cut for cut in clip.scene_cut_times_s
+                           if 0 < cut < clip.duration_s), clip.duration_s)
+    spans = [(start, end) for start, end in zip(bounds, bounds[1:])]
+    samples = clip.sharpness_samples
+    if len(samples) < 3:
+        return tuple(spans)
+    median = statistics.median(value for _, value in samples)
+    if median < 0.01:
+        return tuple(spans)
+    threshold = min(0.006, median * 0.28)
+    step = statistics.median(b[0] - a[0] for a, b in zip(samples, samples[1:]))
+    margin = max(0.12, step * 0.55)
+    for at, sharpness in samples:
+        if sharpness >= threshold:
+            continue
+        left, right = at - margin, at + margin
+        spans = [(a, b) for start, end in spans
+                 for a, b in ((start, min(end, left)), (max(start, right), end))
+                 if b - a >= 0.7]
+    return tuple(spans)
 
 
 def _words(value: str) -> set[str]:
@@ -170,9 +200,7 @@ def _context_candidates(index: int, beat: SceneBeatRequirement,
         if not centers:
             continue
         evidence = sorted(clip.frame_evidence, key=lambda item: item.time_s)
-        bounds = (0.0, *sorted(cut for cut in clip.scene_cut_times_s
-                               if 0 < cut < clip.duration_s), clip.duration_s)
-        for shot_start, shot_end in zip(bounds, bounds[1:]):
+        for shot_start, shot_end in _usable_spans(clip):
             if shot_end - shot_start < 0.75 or min(
                     abs((shot_start + shot_end) / 2 - center) for center in centers) > 12:
                 continue
@@ -194,7 +222,15 @@ def _context_candidates(index: int, beat: SceneBeatRequirement,
                 support = [item for item in shot_evidence if _context_support(item.description, beat)]
             if len(support) < 2 or len(support) != len(shot_evidence):
                 continue
-            left, right = support[0], support[-1]
+            # A corroborating observation a few milliseconds from a measured
+            # cut can lie outside the conservative rendering margin. Keep the
+            # earlier pair rather than discarding the whole clean shot.
+            safe_support = [item for item in support
+                            if shot_start + (0.08 if shot_start else 0) <= item.time_s <=
+                            shot_end - (0.08 if shot_end < clip.duration_s else 0)]
+            if len(safe_support) < 2:
+                continue
+            left, right = safe_support[0], safe_support[-1]
             if shot_end - shot_start <= 3:
                 source_in = shot_start + (0.08 if shot_start else 0)
                 source_out = shot_end - (0.08 if shot_end < clip.duration_s else 0)
@@ -270,8 +306,7 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
         if not clip.usable or (duration_s is not None and clip.duration_s + 0.01 < duration_s):
             continue
         evidence = sorted(clip.frame_evidence, key=lambda item: item.time_s)
-        bounds = (0.0, *sorted(cut for cut in clip.scene_cut_times_s
-                               if 0 < cut < clip.duration_s), clip.duration_s)
+        bounds = _usable_spans(clip)
         for left_index, left in enumerate(evidence):
             for right in evidence[left_index + 1:]:
                 if right.time_s - left.time_s > max(5.5, duration_s or 0):
@@ -312,7 +347,7 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
                 # the requested beat. A centred window can open on unrelated
                 # material for more than a second before the evidence appears.
                 if duration_s is None:
-                    shot = next(((start, end) for start, end in zip(bounds, bounds[1:])
+                    shot = next(((start, end) for start, end in bounds
                                  if start <= left.time_s < end and start <= right.time_s < end), None)
                     if shot is None:
                         continue
@@ -335,6 +370,9 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
                                     clip.duration_s - duration_s)
                     source_out = source_in + duration_s
                 if not (source_in <= left.time_s < source_out and source_in <= right.time_s < source_out):
+                    continue
+                if not any(start <= source_in and source_out <= end
+                           for start, end in bounds):
                     continue
                 # A source file may already contain a montage. Two matching
                 # descriptions cannot establish continuous action across a
@@ -387,8 +425,9 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
         # the same shot should not create duplicate footage in the plan.
         unique: dict[tuple[str, int], BeatWindow] = {}
         for item in found:
-            cuts = clips[item.clip_id].scene_cut_times_s
-            key = (item.clip_id, sum(cut <= item.source_in_s for cut in cuts))
+            key = (item.clip_id, next((index for index, (start, end) in
+                   enumerate(_usable_spans(clips[item.clip_id]))
+                   if start <= item.source_in_s < end), -1))
             previous = unique.get(key)
             if previous is None or (item.relevance, item.source_out_s - item.source_in_s) > (
                     previous.relevance, previous.source_out_s - previous.source_in_s):

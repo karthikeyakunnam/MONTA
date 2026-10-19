@@ -43,8 +43,20 @@ async def test_encoded_title_check_catches_missing_asset_and_accepts_rendered_as
     result = await MediaRenderer().render(plan, output_path=output)
     assert result.success and result.validation_passed
     present = await inspect_render(str(output), plan, storage_root=str(tmp_path), actual_duration_s=2)
-    assert next(c for c in present["checks"] if c["name"] == "text:title")["status"] == "passed"
+    title_check = next(c for c in present["checks"] if c["name"] == "text:title")
+    assert title_check["status"] == "passed"
+    assert [sample["at_s"] for sample in title_check["evidence"]["samples"]] == [0.2, 0.9, 1.7]
     assert next(c for c in present["checks"] if c["name"] == "duration_and_frame")["status"] == "passed"
+
+    shortened = revalidate(plan, text_overlays=(revalidate(overlay, end_ms=1500),))
+    shortened_output = tmp_path / "shortened.mp4"
+    shortened_result = await MediaRenderer().render(shortened, output_path=shortened_output)
+    assert shortened_result.success and shortened_result.validation_passed
+    early_end = await inspect_render(str(shortened_output), plan,
+                                     storage_root=str(tmp_path), actual_duration_s=2)
+    early_check = next(c for c in early_end["checks"] if c["name"] == "text:title")
+    assert early_check["status"] == "failed"
+    assert early_check["evidence"]["samples"][-1]["matching_pixel_fraction"] < 0.70
 
 
 @pytest.mark.asyncio

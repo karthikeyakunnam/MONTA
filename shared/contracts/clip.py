@@ -79,6 +79,7 @@ class SignalMetrics(BaseModel):
     contrast: float = Field(..., ge=0)
     clipped_ratio: float = Field(..., ge=0, le=1)
     sharpness: float = Field(..., ge=0, description="Median variance of Laplacian on [0,1] luma")
+    sharpness_samples: tuple[tuple[float, float], ...] = Field((), description="Source seconds and measured luma sharpness")
     motion_mean: float = Field(..., ge=0, description="Mean absolute frame difference")
     motion_std: float = Field(..., ge=0)
     camera_speed: float = Field(..., ge=0, description="Global motion in frame-widths per second")
@@ -319,6 +320,7 @@ class ClipIntelligence(BaseModel):
     visual_tags: Labels = ()
     frame_evidence: tuple[FrameEvidence, ...] = ()
     scene_cut_times_s: tuple[float, ...] = Field((), description="Approximate source-relative visual discontinuities; not semantic labels")
+    sharpness_samples: tuple[tuple[float, float], ...] = Field((), description="Source seconds and measured luma sharpness")
     reasoning: NonEmptyText
 
     peak_time_s: float = Field(0.0, ge=0)
