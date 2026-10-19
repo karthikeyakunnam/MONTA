@@ -8,16 +8,18 @@ Works 100% locally and offline without external API dependencies.
 
 import asyncio
 import logging
+import math
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 from PIL import Image, ImageDraw, ImageFont
 
 from speech.caption_generator import CaptionGenerator
 from speech.transcriber import WhisperTranscriber
 from shared.contracts.vocab import CaptionStyle
+from shared.contracts.timeline import TextOverlayIR
 
 logger = logging.getLogger("monta.captions.engine")
 
@@ -119,6 +121,7 @@ class CaptionEngine:
         height: int,
         style: CaptionStyle | str = CaptionStyle.MINIMAL,
         output_path: Optional[str] = None,
+        placement: str = "bottom",
     ) -> str:
         """Render a single caption overlay transparent PNG matching the requested style."""
         matched = CaptionStyle.MINIMAL
@@ -136,6 +139,8 @@ class CaptionEngine:
         # Scale font size with resolution (reference 1080p height)
         scale = height / 1080.0
         font_size = max(18, int(round(spec["font_size"] * scale)))
+        if placement == "top":
+            font_size = min(font_size, max(18, round(width * 0.05)))
         stroke_width = max(1, int(round(spec["stroke_width"] * scale)))
         bottom_margin = int(round(spec["bottom_margin"] * scale))
 
@@ -190,9 +195,16 @@ class CaptionEngine:
         text_h = sum(line_heights) + line_spacing * max(0, len(lines) - 1)
         if text_h > height * 0.35:
             raise ValueError("Caption is too long for the safe video area")
-        y = height - bottom_margin - text_h
-        if y < height * 0.55:
-            raise ValueError("Caption overlaps the subject-safe area")
+        if placement == "bottom":
+            y = height - bottom_margin - text_h
+            if y < height * 0.55:
+                raise ValueError("Caption overlaps the subject-safe area")
+        elif placement == "top":
+            y = bottom_margin
+            if y + text_h > height * 0.45:
+                raise ValueError("Caption is too tall for the upper safe area")
+        else:
+            raise ValueError(f"Unsupported caption placement: {placement}")
 
         # Draw background pill if requested
         if spec.get("bg_pill"):
@@ -219,6 +231,78 @@ class CaptionEngine:
         img.save(output_path, "PNG")
         return output_path
 
+    def create_avoiding_overlay_image(
+        self, text: str, width: int, height: int, start: float, end: float,
+        avoid_overlays: Sequence[TextOverlayIR], *,
+        style: CaptionStyle | str = CaptionStyle.MINIMAL,
+        output_path: str,
+        placement_order: tuple[str, ...] = ("bottom", "top"),
+    ) -> str:
+        """Choose a caption region using the actual saved text asset pixels."""
+        active = [item for item in avoid_overlays
+                  if item.start_ms < round(end * 1000) and item.end_ms > round(start * 1000)]
+        reserved = []
+        for item in active:
+            with Image.open(item.asset_path) as image:
+                if image.size != (width, height):
+                    raise ValueError(f"Overlay {item.overlay_id} dimensions do not match the video")
+                bounds = image.convert("RGBA").getchannel("A").getbbox()
+                if bounds:
+                    reserved.append((item.overlay_id, bounds))
+        for placement in placement_order:
+            self.create_overlay_image(text, width, height, style=style,
+                                      output_path=output_path, placement=placement)
+            with Image.open(output_path) as image:
+                caption_box = image.getchannel("A").getbbox()
+            if caption_box is None:
+                raise ValueError("Caption overlay has no visible pixels")
+            if not any(self._boxes_intersect(caption_box, box, padding=12)
+                       for _, box in reserved):
+                return output_path
+        raise ValueError("Caption overlaps required title/subtitle in the available safe areas")
+
+    def _prepare_caption_overlays(
+        self, captions: list[dict[str, Any]], width: int, height: int,
+        style: CaptionStyle | str, avoid_overlays: Sequence[TextOverlayIR],
+    ) -> list[tuple[str, float, float]]:
+        """Hold one vertical caption region throughout a continuous caption track when safe."""
+        items = [item for item in captions if item.get("text", "").strip()]
+        overlays: list[tuple[str, float, float]] = []
+        placements: list[str] = []
+        for index, item in enumerate(items):
+            path = str(Path(self.temp_dir) / f"cap_{os.getpid()}_{index}.png")
+            self.create_avoiding_overlay_image(
+                item["text"].strip(), width, height, item["start"], item["end"],
+                avoid_overlays, style=style, output_path=path,
+            )
+            with Image.open(path) as image:
+                bounds = image.getchannel("A").getbbox()
+            placements.append("top" if bounds and bounds[3] < height / 2 else "bottom")
+            overlays.append((path, item["start"], item["end"]))
+        if set(placements) == {"top", "bottom"}:
+            try:
+                for item, (path, _, _) in zip(items, overlays):
+                    self.create_avoiding_overlay_image(
+                        item["text"].strip(), width, height, item["start"], item["end"],
+                        avoid_overlays, style=style, output_path=path,
+                        placement_order=("top",),
+                    )
+            except ValueError:
+                # Some other required overlay occupies the upper area; retain
+                # each cue's individually validated position.
+                for item, (path, _, _) in zip(items, overlays):
+                    self.create_avoiding_overlay_image(
+                        item["text"].strip(), width, height, item["start"], item["end"],
+                        avoid_overlays, style=style, output_path=path,
+                    )
+        return overlays
+
+    @staticmethod
+    def _boxes_intersect(first: tuple[int, int, int, int], second: tuple[int, int, int, int],
+                         *, padding: int = 0) -> bool:
+        return (first[0] < second[2] + padding and first[2] + padding > second[0]
+                and first[1] < second[3] + padding and first[3] + padding > second[1])
+
     async def burn_captions(
         self,
         video_path: str,
@@ -227,8 +311,14 @@ class CaptionEngine:
         style: CaptionStyle | str = CaptionStyle.MINIMAL,
         width: int = 1920,
         height: int = 1080,
+        audio_gain: float = 1.0,
+        avoid_overlays: Sequence[TextOverlayIR] = (),
     ) -> str:
         """Render and burn styled captions directly into video footage."""
+        if not math.isfinite(audio_gain) or not 0 < audio_gain <= 1:
+            raise ValueError("audio_gain must be finite, positive, and at most 1")
+        if audio_gain != 1 and not captions:
+            raise ValueError("audio gain requires a caption render; no captions were supplied")
         if not captions:
             # Nothing to burn, copy or link
             cmd = [self.ffmpeg_bin, "-y", "-v", "error", "-i", video_path, "-c", "copy", output_path]
@@ -239,14 +329,10 @@ class CaptionEngine:
         out_path = str(Path(output_path).resolve())
         overlay_files: list[str] = []
         try:
-            # 1. Generate transparent PNG overlays for each caption segment
-            for i, seg in enumerate(captions):
-                text = seg.get("text", "").strip()
-                if not text:
-                    continue
-                img_path = str(Path(self.temp_dir) / f"cap_{os.getpid()}_{i}.png")
-                self.create_overlay_image(text, width, height, style=style, output_path=img_path)
-                overlay_files.append((img_path, seg["start"], seg["end"]))
+            # 1. Generate transparent overlays with a stable vertical position.
+            overlay_files = self._prepare_caption_overlays(
+                captions, width, height, style, avoid_overlays,
+            )
 
             if not overlay_files:
                 cmd = [self.ffmpeg_bin, "-y", "-v", "error", "-i", video_path, "-c", "copy", out_path]
@@ -278,8 +364,10 @@ class CaptionEngine:
                 "-c:v", "libx264",
                 "-c:a", "aac",
                 "-preset", "fast",
-                out_path,
             ])
+            if audio_gain != 1:
+                cmd.extend(["-af", f"volume={audio_gain:.6f}"])
+            cmd.append(out_path)
 
             proc = await asyncio.create_subprocess_exec(
                 *cmd,

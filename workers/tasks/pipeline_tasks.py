@@ -730,6 +730,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             await caption_engine.burn_captions(
                                 str(render_file), captions, str(caption_file), style=caption_style,
                                 width=render_result.width, height=render_result.height,
+                                avoid_overlays=timeline_ir.text_overlays,
                             )
                             caption_validation = await OutputValidator(
                                 ffprobe_bin=settings.FFPROBE_PATH,
@@ -794,6 +795,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                             await caption_engine.burn_captions(
                                 str(repaired_file), captions, str(checked_file), style=caption_style,
                                 width=repaired_result.width, height=repaired_result.height,
+                                avoid_overlays=repaired_timeline.text_overlays,
                             )
                             checked_result = await OutputValidator(
                                 ffprobe_bin=settings.FFPROBE_PATH,

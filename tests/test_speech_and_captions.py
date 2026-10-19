@@ -11,6 +11,7 @@ from services.edit_executor.caption_engine import CaptionEngine
 from speech.caption_generator import CaptionGenerator
 from speech.transcriber import LocalWhisperModelUnavailable, WhisperTranscriber
 from shared.contracts.vocab import CaptionStyle
+from shared.contracts.timeline import TextOverlayIR
 
 
 SAMPLE_SEGMENTS = [
@@ -91,6 +92,97 @@ def test_long_source_caption_stays_inside_vertical_safe_area(tmp_path):
     assert bounds is not None
     assert bounds[0] >= 50 and bounds[2] <= 1030
     assert bounds[1] >= 1056 and bounds[3] <= 1920
+
+
+@pytest.mark.parametrize("caption", ["W" * 250, "many " * 1000])
+def test_caption_rejects_text_that_cannot_fit_safe_area(tmp_path, caption):
+    engine = CaptionEngine(temp_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="safe video area"):
+        engine.create_overlay_image(caption, width=1080, height=1920)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gain", [0, -1, 1.01, float("nan"), float("inf")])
+async def test_caption_audio_gain_rejects_unsafe_values(tmp_path, gain):
+    engine = CaptionEngine(temp_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="audio_gain"):
+        await engine.burn_captions("unused.mp4", [], str(tmp_path / "out.mp4"), audio_gain=gain)
+
+
+def test_caption_avoids_timed_subtitle_without_changing_its_words(tmp_path):
+    from PIL import Image, ImageDraw
+
+    reserved_path = tmp_path / "subtitle.png"
+    reserved = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
+    ImageDraw.Draw(reserved).rectangle((220, 1650, 860, 1710), fill=(255, 255, 255, 255))
+    reserved.save(reserved_path)
+    subtitle = TextOverlayIR(
+        overlay_id="subtitle", role="subtitle", text="Exact subtitle",
+        source_span="test", asset_path=str(reserved_path), start_ms=350, end_ms=4500,
+        position="bottom", color="white", font_family="sans_serif", timing_source="prompt",
+    )
+    engine = CaptionEngine(temp_dir=str(tmp_path))
+    caption = "Hi, welcome to day 21 of speaking and I get rid of embarrassment series."
+    opening = engine.create_avoiding_overlay_image(
+        caption, 1080, 1920, 0, 3.6, (subtitle,), output_path=str(tmp_path / "opening.png"),
+    )
+    partial = engine.create_avoiding_overlay_image(
+        caption, 1080, 1920, 4.226, 8.357, (subtitle,),
+        output_path=str(tmp_path / "partial.png"),
+    )
+    later = engine.create_avoiding_overlay_image(
+        caption, 1080, 1920, 4.6, 8.0, (subtitle,), output_path=str(tmp_path / "later.png"),
+    )
+    with Image.open(opening) as image:
+        opening_box = image.getchannel("A").getbbox()
+    with Image.open(partial) as image:
+        partial_box = image.getchannel("A").getbbox()
+    with Image.open(later) as image:
+        later_box = image.getchannel("A").getbbox()
+    assert opening_box is not None and opening_box[3] < 864
+    assert partial_box is not None and partial_box[3] < 864
+    assert later_box is not None and later_box[1] > 1056
+
+    track = engine._prepare_caption_overlays([
+        {"start": 0.0, "end": 3.6, "text": caption},
+        {"start": 4.6, "end": 8.0, "text": "A later cue keeps the same vertical region."},
+        {"start": 8.1, "end": 12.0, "text":
+         "And to begin with, I have this habit of appreciating the food that someone makes for me, irrespective"},
+    ], 1080, 1920, CaptionStyle.MINIMAL, (subtitle,))
+    with Image.open(track[0][0]) as image:
+        first_box = image.getchannel("A").getbbox()
+    with Image.open(track[1][0]) as image:
+        second_box = image.getchannel("A").getbbox()
+    with Image.open(track[2][0]) as image:
+        long_box = image.getchannel("A").getbbox()
+    assert first_box is not None and first_box[3] < 384
+    assert second_box is not None and second_box[3] < 384
+    assert long_box is not None and long_box[3] < 384
+    assert [(start, end) for _, start, end in track] == [
+        (0.0, 3.6), (4.6, 8.0), (8.1, 12.0),
+    ]
+
+
+def test_caption_blocks_when_title_occupies_both_safe_areas(tmp_path):
+    from PIL import Image, ImageDraw
+
+    reserved_path = tmp_path / "blocked.png"
+    reserved = Image.new("RGBA", (1080, 1920), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(reserved)
+    draw.rectangle((0, 0, 1080, 600), fill=(255, 255, 255, 255))
+    draw.rectangle((0, 1300, 1080, 1920), fill=(255, 255, 255, 255))
+    reserved.save(reserved_path)
+    overlay = TextOverlayIR(
+        overlay_id="blocked", role="title", text="Title", source_span="test",
+        asset_path=str(reserved_path), start_ms=0, end_ms=3000,
+        position="center", color="white", font_family="serif", timing_source="prompt",
+    )
+    engine = CaptionEngine(temp_dir=str(tmp_path))
+    with pytest.raises(ValueError, match="available safe areas"):
+        engine.create_avoiding_overlay_image(
+            "A short caption", 1080, 1920, 0, 2.0, (overlay,),
+            output_path=str(tmp_path / "caption.png"),
+        )
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="ffmpeg not installed")
