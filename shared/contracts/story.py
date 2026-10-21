@@ -173,6 +173,7 @@ class ValidationRule(StrEnum):
     TARGET_DURATION = "target_duration"
     NO_SOURCE_OVERLAP = "no_source_overlap"
     NO_JUMP_CUTS = "no_jump_cuts"
+    PACE_CUT_DENSITY = "pace_cut_density"
 
 
 class ValidationViolation(BaseModel):

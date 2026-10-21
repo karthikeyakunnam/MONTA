@@ -3,7 +3,13 @@ import { expect, test } from '@playwright/test';
 const projectId = process.env.MONTA_LIVE_MANUAL_PROJECT_ID;
 test.skip(!projectId, 'Set MONTA_LIVE_MANUAL_PROJECT_ID to a completed local project.');
 
-test('visual clip dragging, trim handle and undo change the real manual draft', async ({ page }, testInfo) => {
+test('visual edits save to the real project and reopen after reload', async ({ page }, testInfo) => {
+  const apiProject = `http://127.0.0.1:8000/api/v1/projects/${projectId}`;
+  const beforeResponse = await page.request.get(apiProject);
+  expect(beforeResponse.ok()).toBeTruthy();
+  const before = await beforeResponse.json();
+  let saved = false;
+  try {
   await page.goto(`/projects/${projectId}`);
   await page.getByRole('button', { name: 'Edit shots' }).click();
   const clips = page.locator('.manual-track-clip');
@@ -46,4 +52,32 @@ test('visual clip dragging, trim handle and undo change the real manual draft', 
   await expect(page.locator('.manual-track-text').first()).toContainText(`${original} revised`);
   await page.getByRole('button', { name: 'Undo' }).click();
   await expect(title).toHaveValue(original);
+  const revised = `${original} revised`;
+  await title.fill(revised);
+  await page.getByRole('button', { name: 'Save draft' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Saved to project' })).toBeVisible();
+  saved = true;
+  const savedResponse = await page.request.get(apiProject);
+  expect(savedResponse.ok()).toBeTruthy();
+  const stored = await savedResponse.json();
+  expect(stored.manual_draft.titles[0].text).toBe(revised);
+  await page.reload();
+  await page.getByRole('button', { name: 'Edit shots' }).click();
+  await page.getByText('Titles and credits · edit text, timing and placement').click();
+  await expect(page.getByLabel('Title 1 text')).toHaveValue(revised);
+  await page.getByRole('button', { name: 'Revise edit' }).click();
+  await expect(page.getByLabel('Resolve manual timeline')).toBeVisible();
+  } finally {
+    if (saved) {
+      const currentResponse = await page.request.get(apiProject);
+      expect(currentResponse.ok()).toBeTruthy();
+      const current = await currentResponse.json();
+      const restore = await page.request.put(`${apiProject}/manual-draft`, { data: {
+        timeline: before.manual_draft,
+        expected_prompt_version: current.prompt_version,
+        expected_draft_revision: current.manual_draft_revision,
+      } });
+      expect(restore.ok()).toBeTruthy();
+    }
+  }
 });

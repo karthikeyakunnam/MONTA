@@ -53,6 +53,9 @@ class Project(Base):
     # Explicit choices from the project form, consumed by the existing pipeline layers.
     edit_options = Column(JSON, nullable=False, default=dict)
     prompt_version = Column(Integer, nullable=False, default=1)
+    # An unrendered manual edit belongs to this project, independent of job snapshots.
+    manual_draft = Column(JSON, nullable=True)
+    manual_draft_revision = Column(Integer, nullable=False, default=0)
 
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

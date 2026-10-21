@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import current_user_id, get_db, get_limits, get_progress_bus, get_queue, get_storage
-from app.models import ClipStatus, ProjectStatus
+from app.models import ACTIVE_STATUSES, ClipStatus, Job, ProjectStatus, Render
 from app.schemas.project import (
     ClipOut,
     JobOut,
@@ -29,6 +29,10 @@ from app.schemas.project import (
     ProjectDetail,
     ProjectOut,
     ProjectUpdate,
+    ManualDraftSave,
+    ManualDraftSaved,
+    PromoteRenderRequest,
+    PromoteRenderResult,
     QuotaClassOut,
     EditOptions,
     RevisionCreate,
@@ -46,6 +50,26 @@ router = APIRouter()
 
 def _service(db: AsyncSession, queue: PipelineQueue | None = None, progress: ProgressBus | None = None) -> ProjectService:
     return ProjectService(db, queue=queue, progress=progress)
+
+
+def _validate_manual_timeline(manual, summary: ProjectSummary, caption_style: str | None) -> None:
+    durations = {clip.id: round(clip.duration * 1000) for clip in summary.usable_clips
+                 if clip.duration is not None}
+    for shot in manual.shots:
+        if shot.clip_id not in durations or shot.source_out_ms > durations[shot.clip_id]:
+            raise ProjectConflict(f"Manual shot {shot.clip_id} is unavailable or exceeds its source duration")
+        if shot.transition_in_ms >= shot.source_out_ms - shot.source_in_ms:
+            raise ProjectConflict(f"Manual shot {shot.clip_id} transition consumes the whole source range")
+    rendered_duration_s = sum(shot.source_out_ms - shot.source_in_ms - shot.transition_in_ms
+                              for shot in manual.shots) / 1000
+    if rendered_duration_s <= 0:
+        raise ProjectConflict("Manual timeline needs a positive rendered duration")
+    if manual.captions and any(caption.end > rendered_duration_s for caption in manual.captions):
+        raise ProjectConflict("Manual caption timing exceeds the edited video duration")
+    if manual.titles and any(title.end_s > rendered_duration_s for title in manual.titles):
+        raise ProjectConflict("Manual title timing exceeds the edited video duration")
+    if manual.captions and caption_style == "None":
+        raise ProjectConflict("Manual captions require a caption style")
 
 
 def _job_out(job) -> JobOut:
@@ -68,15 +92,21 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
         ))
     story = project.story_plan or {}
     judgement = project.story_judgement or {}
+    jobs_by_id = {job.id: job for job in summary.jobs}
     preferred_render_id = judgement.get("current_render_id") if isinstance(judgement, dict) else None
     render_candidates = list(summary.renders)
     if preferred_render_id:
         render_candidates.sort(key=lambda item: item.id != preferred_render_id)
     render = None
     render_file = None
-    if render_candidates:
+    pending_without_current = ("promotion_pending_render_id" in judgement and
+                               judgement.get("promotion_pending_render_id") and
+                               not preferred_render_id)
+    if render_candidates and not pending_without_current:
         from app.config import settings
         for candidate in render_candidates:
+            if preferred_render_id and candidate.id != preferred_render_id:
+                continue
             if candidate.output_path and candidate.status == "complete":
                 try:
                     candidate_file = resolve_stored_mp4(candidate.output_path, settings.storage_root_path)
@@ -89,6 +119,9 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
         id=project.id, title=project.title, description=project.description, status=ProjectStatus(project.status),
         status_detail=project.status_detail, raw_prompt=project.raw_prompt, target_platform=project.target_platform,
         edit_options=EditOptions.model_validate(project.edit_options or {}),
+        manual_draft=(project.manual_draft or {}).get("timeline"),
+        manual_draft_prompt_version=(project.manual_draft or {}).get("prompt_version"),
+        manual_draft_revision=project.manual_draft_revision or 0,
         prompt_version=project.prompt_version or 1,
         created_at=project.created_at, updated_at=project.updated_at, clip_count=len(usable),
         clips=[_clip_out(c) for c in summary.clips],
@@ -109,6 +142,16 @@ def _detail(summary: ProjectSummary, limits: GatewayLimits) -> ProjectDetail:
                 platform=r.platform, duration=r.duration, file_size_bytes=int(r.file_size_bytes or 0),
                 created_at=r.created_at,
                 is_current=bool(render and r.id == render.id),
+                requires_review=r.id == judgement.get("promotion_pending_render_id"),
+                promotion_available=bool(
+                    r.status == "complete" and r.output_path and _valid_render_path(r.output_path)
+                    and r.job_id in jobs_by_id
+                    and isinstance(jobs_by_id[r.job_id].result, dict)
+                    and jobs_by_id[r.job_id].result.get("render_quality_status") in
+                    ("passed", "warning")
+                    and jobs_by_id[r.job_id].result.get("brief_validation_status") in
+                    ("passed", "unavailable")
+                ),
                 preview_url=f"/api/v1/render/{r.id}/download" if r.status == "complete" and r.output_path
                 and _valid_render_path(r.output_path) else None,
             )
@@ -192,6 +235,70 @@ async def update_project(project_id: str, payload: ProjectUpdate, db: AsyncSessi
                       created_at=project.created_at, updated_at=project.updated_at)
 
 
+@router.put("/{project_id}/manual-draft", response_model=ManualDraftSaved)
+async def save_manual_draft(project_id: str, payload: ManualDraftSave,
+                            db: AsyncSession = Depends(get_db),
+                            user_id: str = Depends(current_user_id)) -> ManualDraftSaved:
+    if payload.timeline is not None:
+        try:
+            summary = await _service(db).summary(project_id, user_id)
+            _validate_manual_timeline(payload.timeline, summary,
+                                      (summary.project.edit_options or {}).get("caption_style"))
+        except ProjectNotFound as e:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+        except ProjectConflict as e:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    try:
+        project = await _service(db).save_manual_draft(
+            project_id, user_id, timeline=payload.timeline.model_dump(mode="json") if payload.timeline else None,
+            expected_prompt_version=payload.expected_prompt_version,
+            expected_draft_revision=payload.expected_draft_revision,
+        )
+    except ProjectNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    except ProjectConflict as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    return ManualDraftSaved(timeline=(project.manual_draft or {}).get("timeline"),
+                            prompt_version=project.prompt_version or 1,
+                            draft_revision=project.manual_draft_revision or 0)
+
+
+@router.post("/{project_id}/renders/{render_id}/promote", response_model=PromoteRenderResult)
+async def promote_render(project_id: str, render_id: str, payload: PromoteRenderRequest,
+                         db: AsyncSession = Depends(get_db),
+                         user_id: str = Depends(current_user_id)) -> PromoteRenderResult:
+    """Creator accepts a technically validated candidate after visual review."""
+    try:
+        project = await _service(db).get_locked(project_id, user_id)
+    except ProjectNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(e)) from e
+    if project.status in ACTIVE_STATUSES or project.prompt_version != payload.expected_prompt_version:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "This project changed or is still rendering; refresh before promoting")
+    candidate = await db.get(Render, render_id)
+    job = await db.get(Job, candidate.job_id) if candidate and candidate.job_id else None
+    if candidate is None or candidate.project_id != project_id or candidate.status != "complete" or not job:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Validated render not found in this project")
+    result = job.result if isinstance(job.result, dict) else {}
+    if (job.project_id != project_id or job.state != "succeeded" or
+            result.get("render_quality_status") not in ("passed", "warning") or
+            result.get("brief_validation_status") not in ("passed", "unavailable")):
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            "This render has no passing encoded and brief validation record")
+    from app.config import settings
+    try:
+        path = resolve_stored_mp4(candidate.output_path, settings.storage_root_path)
+    except (OSError, ValueError, TypeError):
+        raise HTTPException(status.HTTP_409_CONFLICT, "The render file is unavailable") from None
+    if not path.is_file() or path.stat().st_size < 1024:
+        raise HTTPException(status.HTTP_409_CONFLICT, "The render file is unavailable")
+    project.story_judgement = {**(project.story_judgement or {}),
+                               "current_render_id": render_id,
+                               "promotion_pending_render_id": None}
+    await db.flush()
+    return PromoteRenderResult(render_id=render_id)
+
+
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_project(project_id: str, db: AsyncSession = Depends(get_db), user_id: str = Depends(current_user_id),
                          storage: LocalMediaStorage = Depends(get_storage)) -> None:
@@ -237,21 +344,7 @@ async def create_revision(project_id: str, payload: RevisionCreate, db: AsyncSes
             raise ProjectConflict("This edit changed in another session; refresh before revising")
         manual = payload.edit_options.manual_timeline
         if manual is not None:
-            durations = {clip.id: round(clip.duration * 1000) for clip in summary.usable_clips
-                         if clip.duration is not None}
-            for shot in manual.shots:
-                if shot.clip_id not in durations or shot.source_out_ms > durations[shot.clip_id]:
-                    raise ProjectConflict(f"Manual shot {shot.clip_id} is unavailable or exceeds its source duration")
-            rendered_duration_s = sum(shot.source_out_ms - shot.source_in_ms - shot.transition_in_ms
-                                      for shot in manual.shots) / 1000
-            if manual.captions is not None and any(caption.end > rendered_duration_s
-                                                   for caption in manual.captions):
-                raise ProjectConflict("Manual caption timing exceeds the edited video duration")
-            if manual.titles is not None and any(title.end_s > rendered_duration_s
-                                                 for title in manual.titles):
-                raise ProjectConflict("Manual title timing exceeds the edited video duration")
-            if manual.captions and payload.edit_options.caption_style == "None":
-                raise ProjectConflict("Manual captions require a caption style")
+            _validate_manual_timeline(manual, summary, payload.edit_options.caption_style)
         job = await service.revise(
             project_id, user_id, prompt=payload.prompt, target_platform=payload.target_platform,
             edit_options=payload.edit_options.model_dump(mode="json"), idempotency_key=payload.idempotency_key,

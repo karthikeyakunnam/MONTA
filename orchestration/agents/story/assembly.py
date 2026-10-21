@@ -28,6 +28,7 @@ Repair
 """
 
 import math
+from itertools import product
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
@@ -321,6 +322,67 @@ def _windows(clip: ClipIntelligence, total_len: float, rhythm: float, max_piece:
     return out
 
 
+def _source_ordered_progression_windows(
+    clip: ClipIntelligence, windows: list[tuple[float, float]], direction: str,
+    profile,
+) -> list[tuple[float, float]]:
+    """Repair a split take using measured windows, without reversing source time.
+
+    Only a bounded one-clip act is searched. Source cuts constrain each
+    candidate; motion energy is a pacing signal, never semantic evidence.
+    If the footage cannot support the requested pattern direction, the
+    validator keeps its error and the render remains blocked.
+    """
+    count = len(windows)
+    if count < 2 or count > 3 or direction not in {"rise", "fall"}:
+        return windows
+    energies = [window_energy(clip, *window) for window in windows]
+    crosses_cut = any(a + 0.01 < cut < b - 0.01 for a, b in windows
+                      for cut in clip.scene_cut_times_s)
+    if not crosses_cut and TimelineValidator._direction_ok(direction, energies, profile)[0]:
+        return windows
+
+    bounds = (0.0, *sorted(cut for cut in clip.scene_cut_times_s
+                           if 0 < cut < clip.duration_s), clip.duration_s)
+    by_region: list[list[tuple[float, float, float]]] = []
+    for index, (nominal_start, nominal_end) in enumerate(windows):
+        piece = nominal_end - nominal_start
+        region_start = clip.duration_s * index / count
+        region_end = clip.duration_s * (index + 1) / count
+        candidates: dict[int, tuple[float, float, float]] = {}
+        for span_start, span_end in zip(bounds, bounds[1:]):
+            low = max(region_start, span_start + (0.06 if span_start else 0))
+            high = min(region_end, span_end - (0.06 if span_end < clip.duration_s else 0))
+            if high - low < piece - 0.001:
+                continue
+            for start in (low, (low + high - piece) / 2, high - piece):
+                start = round(start, 3)
+                end = round(start + piece, 3)
+                if end <= high + 0.002:
+                    candidates[round(start * 1000)] = (start, end,
+                                                        window_energy(clip, start, end))
+        if not candidates:
+            return windows
+        # Keep both low- and high-energy alternatives so the bounded search
+        # can meet either a rise or fall without discarding the needed opener.
+        values = list(candidates.values())
+        values.sort(key=lambda item: item[2])
+        by_region.append(list(dict.fromkeys((*values[:12], *values[-12:]))))
+
+    best = None
+    for proposal in product(*by_region):
+        if any(left[1] > right[0] + 0.001 for left, right in zip(proposal, proposal[1:])):
+            continue
+        proposal_energy = [item[2] for item in proposal]
+        if not TimelineValidator._direction_ok(direction, proposal_energy, profile)[0]:
+            continue
+        score = sum(proposal_energy) - 0.08 * sum(
+            abs(item[0] - windows[index][0]) for index, item in enumerate(proposal))
+        if best is None or score > best[0]:
+            best = (score, proposal)
+    return [(item[0], item[1]) for item in best[1]] if best else windows
+
+
 def _interleave(groups: list[list[tuple]], direction: str) -> list[tuple]:
     """Order an act's pieces so split takes don't sit back-to-back *and* the act keeps its energy direction.
 
@@ -354,6 +416,9 @@ def build_timeline(adapted: AdaptedPattern, assignment: Assignment, clips: Mappi
     for (act, c, pref, _, _), total_len in zip(rows, lengths):
         max_piece = max(MIN_CUT_S * 2, pref * MAX_PIECE_FACTOR)
         wins = _windows(c, total_len, pref, max_piece)
+        if sum(row[0].act_id == act.act_id for row in rows) == 1:
+            wins = _source_ordered_progression_windows(
+                c, wins, act.template.energy_direction, adapted.pattern.validation)
         hero_idx = max(range(len(wins)), key=lambda i: window_energy(c, *wins[i])) if c.clip_id == assignment.hero else -1
         per_act.setdefault(act.act_id, []).append([(act, c, a0, a1, i == hero_idx) for i, (a0, a1) in enumerate(wins)])
 

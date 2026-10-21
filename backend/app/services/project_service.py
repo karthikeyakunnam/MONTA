@@ -186,6 +186,25 @@ class ProjectService:
         await self.db.refresh(project)
         return project
 
+    async def save_manual_draft(self, project_id: str, user_id: str, *, timeline: dict | None,
+                                expected_prompt_version: int, expected_draft_revision: int) -> Project:
+        """Save an unrendered draft without changing any immutable job or render."""
+        await self.get_locked(project_id, user_id)
+        result = await self.db.execute(
+            update(Project)
+            .where(Project.id == project_id, Project.user_id == user_id,
+                   Project.prompt_version == expected_prompt_version,
+                   Project.manual_draft_revision == expected_draft_revision)
+            .values(manual_draft=({"prompt_version": expected_prompt_version, "timeline": timeline}
+                                  if timeline is not None else None),
+                    manual_draft_revision=expected_draft_revision + 1)
+        )
+        if result.rowcount != 1:
+            raise ProjectConflict("This project or manual draft changed in another session; refresh before saving")
+        project = await self.get(project_id, user_id)
+        await self.db.refresh(project)
+        return project
+
     async def delete(self, project_id: str, user_id: str, storage=None) -> None:
         project = await self.get(project_id, user_id)
         if project.status in ACTIVE_STATUSES:

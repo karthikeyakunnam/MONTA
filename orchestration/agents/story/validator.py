@@ -42,6 +42,7 @@ from shared.contracts.story import (
     ValidationViolation,
 )
 from shared.contracts.vocab import Pace
+from orchestration.agents.story.selection import BASE_CUT_S
 
 BASE_ENERGY_JUMP: dict[Pace, float] = {Pace.SLOW: 3.0, Pace.MEDIUM: 4.0, Pace.FAST: 4.5, Pace.AGGRESSIVE: 5.5}
 RELEASE_DROP_FACTOR = 1.5
@@ -112,6 +113,18 @@ class TimelineValidator:
             v.append(ValidationViolation(rule=rule, severity=severity, message=msg, segment_indices=tuple(idx), clip_ids=tuple(ids)))
 
         segs = list(timeline)
+        if c.explicit_scene_order and len(segs) > 1:
+            # A measured density warning, not a claim about perceived rhythm.
+            # Use the same pace references as shot assembly; source-backed
+            # beats may legitimately need shorter cuts when footage is scarce.
+            mean_cut_s = (segs[-1].end - segs[0].start) / len(segs)
+            planning_floor_s = BASE_CUT_S[pace] * 0.75
+            if mean_cut_s < planning_floor_s:
+                add(ValidationRule.PACE_CUT_DENSITY,
+                    f"{len(segs)} shots in {segs[-1].end - segs[0].start:.2f}s average "
+                    f"{mean_cut_s:.2f}s per shot, below the {pace.value} planning "
+                    f"reference {planning_floor_s:.2f}s; review pacing or add longer source takes",
+                    [s.index for s in segs], [s.clip_id for s in segs], severity="warning")
         if segs and segs[0].start > c.epsilon:
             add(ValidationRule.NO_GAPS, f"timeline starts at {segs[0].start:.3f}s, not 0", [0], [segs[0].clip_id])
         for prev, cur in zip(segs, segs[1:]):

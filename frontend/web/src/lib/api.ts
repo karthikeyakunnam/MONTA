@@ -92,6 +92,9 @@ export interface Project {
 }
 
 export interface ProjectDetail extends Project {
+  manual_draft: ManualTimeline | null;
+  manual_draft_prompt_version: number | null;
+  manual_draft_revision: number;
   clips: Clip[];
   jobs: Job[];
   quota: QuotaClass[];
@@ -216,6 +219,9 @@ export interface TimelineArtifact {
       frame_evidence?: { time_s: number; description: string; model_id: string; status: 'model_observation_unverified' } | null;
     }>;
     manual_timeline_applied?: boolean;
+    story_validation?: { passed: boolean; violations: Array<{
+      rule: string; severity: 'error' | 'warning'; message: string;
+    }> };
     unsupported_effects?: Array<{ effect: string; status: string; reason: string; evidence?: string[] }>;
     render_quality?: {
       status: 'passed' | 'warning' | 'failed' | 'unavailable';
@@ -230,6 +236,8 @@ export interface Render {
   id: string;
   job_id: string | null;
   is_current?: boolean;
+  requires_review?: boolean;
+  promotion_available?: boolean;
   status: string;
   resolution: string;
   format: string;
@@ -375,6 +383,15 @@ export const health = () => request<Health>('/health');
 export const uploadLimits = () => request<UploadLimits>('/upload/limits');
 export const listProjects = () => request<Project[]>('/projects');
 export const getProject = (id: string) => request<ProjectDetail>(`/projects/${id}`);
+export const promoteRender = (projectId: string, renderId: string, expectedPromptVersion: number) =>
+  request<{ render_id: string; status: 'promoted' }>(
+    `/projects/${projectId}/renders/${renderId}/promote`, {
+      method: 'POST', body: JSON.stringify({ expected_prompt_version: expectedPromptVersion }),
+    });
+export const saveManualDraft = (id: string, body: {
+  timeline: ManualTimeline | null; expected_prompt_version: number; expected_draft_revision: number;
+}) => request<{ timeline: ManualTimeline | null; prompt_version: number; draft_revision: number }>(
+  `/projects/${id}/manual-draft`, { method: 'PUT', body: JSON.stringify(body) });
 export const getTimeline = (id: string) => request<TimelineArtifact>(`/timeline/${id}`);
 export const createProject = (body: {
   title: string;

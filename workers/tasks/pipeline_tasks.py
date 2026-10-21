@@ -621,6 +621,11 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     "prompt_version": job.prompt_version if job is not None else project.prompt_version,
                     "edit_options": dict(edit_options),
                     "pace": active_story.pace.value.value,
+                    "story_validation": {
+                        "passed": active_story.validation.passed,
+                        "violations": [item.model_dump(mode="json")
+                                       for item in active_story.validation.violations],
+                    },
                     "emotion": active_story.emotion.value.value,
                     "creative_brief": render_brief.model_dump(mode="json"),
                     "rendered_text_overlays": [overlay.model_dump(mode="json") for overlay in overlays],
@@ -1006,13 +1011,17 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                         prior_render_accessible = prior_path.is_file() and prior_path.stat().st_size >= 1024
                     except (OSError, ValueError):
                         prior_render_accessible = False
-                retain_prior_render = bool(
+                score_worse = bool(
                     same_evaluation_inputs and prior_render_accessible
                     and isinstance(prior_critic_score, (int, float))
                     and isinstance(current_critic_score, (int, float))
                     and float(current_critic_score) < float(prior_critic_score)
                 )
-                chosen_current_render_id = prior_render.id if retain_prior_render else render_id
+                needs_review = (render_quality.get("status") != "passed" or
+                                brief_validation.get("status") != "passed")
+                retain_prior_render = score_worse or needs_review
+                chosen_current_render_id = (prior_render.id if prior_render_accessible and retain_prior_render
+                                            else None if needs_review else render_id)
 
                 if platform_export_path and os.path.exists(platform_export_path):
                     export_render_id = str(uuid4())
@@ -1047,14 +1056,17 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 )
                 if duration_notice:
                     project.status_detail += f" · {duration_notice}"
-                if retain_prior_render:
+                if score_worse and not needs_review:
                     project.status_detail += (
                         f" · Previous render retained: critic score {float(current_critic_score):.2f} "
                         f"was below {float(prior_critic_score):.2f} for the same prompt and options."
                     )
+                if needs_review:
+                    project.status_detail += " · Candidate needs review before promotion."
                 project.story_judgement = {
                     **(project.story_judgement or {}),
                     "current_render_id": chosen_current_render_id,
+                    "promotion_pending_render_id": render_id if needs_review else None,
                 }
                 if not render_file.is_file() or render_file.stat().st_size < 1024:
                     raise RuntimeError("The validated MP4 disappeared or became inaccessible before completion.")
@@ -1082,8 +1094,11 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                                   "judge_score": judgement.overall_score,
                                   "critic_score": critic_verdict.get("overall_score") if critic_verdict else None,
                                   "previous_critic_score": prior_critic_score if same_evaluation_inputs else None,
-                                  "render_promoted": not retain_prior_render,
-                                  "retained_render_id": prior_render.id if retain_prior_render else None,
+                                  "render_promoted": chosen_current_render_id == render_id,
+                                  "retained_render_id": (prior_render.id if prior_render_accessible and
+                                                         chosen_current_render_id == prior_render.id else None),
+                                  "render_quality_status": render_quality.get("status"),
+                                  "brief_validation_status": brief_validation.get("status"),
                                   "reused_clip_analysis": cache_reused,
                                   "reused_clip_analysis_ids": sorted(reused_clip_analysis_ids),
                                   "vision_reanalysis_ids": sorted(vision_reanalysis_ids),

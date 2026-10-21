@@ -24,7 +24,9 @@ import {
   getTimeline,
   mediaUrl,
   projectEvents,
+  promoteRender,
   retryRevision,
+  saveManualDraft,
   startPipeline,
   uploadLimits,
   type ProgressEvent,
@@ -107,6 +109,7 @@ export default function ProjectPage() {
   const [manualMusicDucking, setManualMusicDucking] = useState<boolean | null>(null);
   const [manualCaptions, setManualCaptions] = useState<ManualCaption[] | null>(null);
   const [manualTitles, setManualTitles] = useState<ManualTitle[] | null>(null);
+  const [manualSaveState, setManualSaveState] = useState<'saved' | 'unsaved' | 'saving'>('unsaved');
   const [compareVersionA, setCompareVersionA] = useState('');
   const [compareVersionB, setCompareVersionB] = useState('');
   const revisionLock = useRef(false);
@@ -169,7 +172,10 @@ export default function ProjectPage() {
     if (!project) return;
     setRevisionPrompt(project.raw_prompt ?? '');
     setRevisionPlatform(project.target_platform);
-    setRevisionOptions(optionsForRevision(project.edit_options));
+    const savedDraft = project.manual_draft_prompt_version === project.prompt_version
+      ? project.manual_draft : null;
+    setRevisionOptions({ ...optionsForRevision(project.edit_options),
+      manual_timeline: savedDraft ?? project.edit_options.manual_timeline ?? null });
     setKeepManualOverride(null);
     setRevisionOpen(true);
     setActionFailure(null);
@@ -178,7 +184,7 @@ export default function ProjectPage() {
   const submitRevision = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (revisionLock.current || !project || !revisionPrompt.trim()) return;
-    const manualConflict = Boolean(project.edit_options.manual_timeline && (
+    const manualConflict = Boolean(revisionOptions.manual_timeline && (
       revisionPrompt.trim() !== (project.raw_prompt ?? '').trim()
       || revisionPlatform !== project.target_platform
       || revisionOptions.target_duration_s !== (project.edit_options.target_duration_s ?? null)
@@ -217,6 +223,7 @@ export default function ProjectPage() {
     }]);
     setManualRedo([]);
     setManualShots(next);
+    setManualSaveState('unsaved');
   };
 
   const changeManualMusic = (volume: number, ducking: boolean | null) => {
@@ -228,6 +235,7 @@ export default function ProjectPage() {
     setManualRedo([]);
     setManualMusicVolume(volume);
     setManualMusicDucking(ducking);
+    setManualSaveState('unsaved');
   };
 
   const changeManualCaptions = (captions: ManualCaption[]) => {
@@ -238,6 +246,7 @@ export default function ProjectPage() {
     }]);
     setManualRedo([]);
     setManualCaptions(captions);
+    setManualSaveState('unsaved');
   };
 
   const changeManualTitles = (titles: ManualTitle[]) => {
@@ -248,25 +257,50 @@ export default function ProjectPage() {
     }]);
     setManualRedo([]);
     setManualTitles(titles);
+    setManualSaveState('unsaved');
   };
 
   const startManualEdit = () => {
     if (!timeline) return;
+    const saved = project?.manual_draft_prompt_version === project?.prompt_version
+      ? project?.manual_draft : null;
     setSelectedManualShot(0);
-    setManualShots(timeline.timeline.video_segments.map((shot) => ({
+    setManualShots(saved?.shots ?? timeline.timeline.video_segments.map((shot) => ({
       clip_id: shot.clip_id, source_in_ms: shot.source_in_ms, source_out_ms: shot.source_out_ms,
       transition_in: shot.transition_in, transition_in_ms: shot.transition_in_ms, volume: shot.volume,
       fade_in_ms: shot.fade_in_ms, fade_out_ms: shot.fade_out_ms, color: shot.color,
     })));
     setManualUndo([]);
     setManualRedo([]);
-    setManualMusicVolume(project?.edit_options.manual_timeline?.music_volume ?? 1);
-    setManualMusicDucking(project?.edit_options.manual_timeline?.music_ducking ?? null);
-    setManualCaptions(timeline.trace.caption_segments ?? project?.edit_options.manual_timeline?.captions ?? null);
-    setManualTitles((timeline.timeline.text_overlays ?? []).map((overlay, overlay_index) => ({
+    setManualMusicVolume(saved?.music_volume ?? project?.edit_options.manual_timeline?.music_volume ?? 1);
+    setManualMusicDucking(saved?.music_ducking ?? project?.edit_options.manual_timeline?.music_ducking ?? null);
+    setManualCaptions(saved?.captions ?? timeline.trace.caption_segments ?? project?.edit_options.manual_timeline?.captions ?? null);
+    setManualTitles(saved?.titles ?? (timeline.timeline.text_overlays ?? []).map((overlay, overlay_index) => ({
       overlay_index, text: overlay.text, start_s: overlay.start_ms / 1000,
       end_s: overlay.end_ms / 1000, position: overlay.position,
     })).filter((_, index) => timeline.timeline.text_overlays?.[index]?.role !== 'caption'));
+    setManualSaveState(saved ? 'saved' : 'unsaved');
+  };
+
+  const manualDraftPayload = (): ManualTimeline | null => manualShots ? {
+    shots: manualShots, music_volume: manualMusicVolume, music_ducking: manualMusicDucking,
+    captions: manualCaptions, titles: manualTitles,
+  } : null;
+
+  const persistManualDraft = async (timelineDraft: ManualTimeline | null) => {
+    if (!project) return;
+    setManualSaveState('saving');
+    try {
+      await saveManualDraft(projectId, { timeline: timelineDraft,
+        expected_prompt_version: project.prompt_version,
+        expected_draft_revision: project.manual_draft_revision });
+      await refresh();
+      setManualSaveState('saved');
+    } catch (error) {
+      setManualSaveState('unsaved');
+      setActionFailure(toFailure(error, 'Saving this manual draft'));
+      throw error;
+    }
   };
 
   const updateManualShot = (index: number, change: Partial<ManualShot>) => {
@@ -301,11 +335,11 @@ export default function ProjectPage() {
     setRevisionBusy(true);
     setActionFailure(null);
     try {
+      await persistManualDraft(manualDraftPayload());
       await createRevision(projectId, {
         prompt: project.raw_prompt ?? '', target_platform: project.target_platform,
         edit_options: { ...optionsForRevision(project.edit_options),
-          manual_timeline: { shots: manualShots, music_volume: manualMusicVolume,
-            music_ducking: manualMusicDucking, captions: manualCaptions, titles: manualTitles } },
+          manual_timeline: manualDraftPayload() },
         idempotency_key: crypto.randomUUID(), expected_prompt_version: project.prompt_version,
       });
       setManualShots(null);
@@ -339,6 +373,20 @@ export default function ProjectPage() {
       await refresh();
     } catch (error) {
       setActionFailure(toFailure(error, 'Cancelling the queued revision'));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const promoteCandidate = async (renderId: string) => {
+    if (!project) return;
+    setBusy(true);
+    setActionFailure(null);
+    try {
+      await promoteRender(projectId, renderId, project.prompt_version);
+      await refresh();
+    } catch (error) {
+      setActionFailure(toFailure(error, 'Promoting this render'));
     } finally {
       setBusy(false);
     }
@@ -480,7 +528,7 @@ export default function ProjectPage() {
                   onChange={(event) => setRevisionPrompt(event.target.value)} />
                 <small className="muted">Edit the full current instruction. Your existing uploads stay on this project.</small>
               </label>
-              {project.edit_options.manual_timeline && (
+              {revisionOptions.manual_timeline && (
                 <label className="field"><span>Manual timeline for this revision</span>
                   <select aria-label="Resolve manual timeline" value={keepManualOverride === null ? '' : keepManualOverride ? 'keep' : 'rebuild'}
                     onChange={(event) => setKeepManualOverride(event.target.value === '' ? null : event.target.value === 'keep')}>
@@ -740,7 +788,7 @@ export default function ProjectPage() {
       </section>
 
       {timeline && (
-        <section className="section" aria-labelledby="manual-edit-heading">
+      <section className="section" aria-labelledby="manual-edit-heading">
           <div className="section-head">
             <div>
               <h2 id="manual-edit-heading">Manual timeline</h2>
@@ -762,6 +810,7 @@ export default function ProjectPage() {
                 setManualMusicDucking(previous.musicDucking); setManualCaptions(previous.captions);
                 setManualTitles(previous.titles);
                 setManualUndo(manualUndo.slice(0, -1));
+                setManualSaveState('unsaved');
               }}>Undo</button>
               <button className="btn secondary small" type="button" disabled={!manualRedo.length} onClick={() => {
                 setManualUndo((history) => [...history, { shots: manualShots,
@@ -772,8 +821,16 @@ export default function ProjectPage() {
                 setManualMusicDucking(next.musicDucking); setManualCaptions(next.captions);
                 setManualTitles(next.titles);
                 setManualRedo(manualRedo.slice(0, -1));
+                setManualSaveState('unsaved');
               }}>Redo</button>
-              <button className="btn secondary small" type="button" onClick={() => setManualShots(null)}>Discard draft</button>
+              <button className="btn secondary small" type="button" disabled={manualSaveState === 'saving'}
+                onClick={() => void persistManualDraft(manualDraftPayload()).catch(() => undefined)}>
+                {manualSaveState === 'saving' ? 'Saving…' : 'Save draft'}
+              </button>
+              <span role="status" className="hint">{manualSaveState === 'saved' ? 'Saved to project' :
+                manualSaveState === 'saving' ? 'Saving draft' : 'Unsaved changes'}</span>
+              <button className="btn secondary small" type="button" disabled={manualSaveState === 'saving'}
+                onClick={() => void persistManualDraft(null).then(() => setManualShots(null)).catch(() => undefined)}>Discard draft</button>
             </div>
             <div className="manual-workspace" aria-label="Editable timeline">
               <div className="manual-track-label">Video</div>
@@ -822,7 +879,7 @@ export default function ProjectPage() {
                 {!manualTitles?.length && !manualCaptions?.length ? 'No titles or captions in this edit' : null}
               </div></div>
             </div>
-            <p className="hint">Select a video block to highlight its controls below. Drag blocks to reorder. This draft is saved with the project when you render the edited version. Keyframes are unavailable.</p>
+            <p className="hint">Select a video block to highlight its controls below. Drag blocks to reorder, then save the draft to this project or render a new version. Keyframes are unavailable.</p>
             {manualShots.map((shot, index) => {
               const source = project.clips.find((clip) => clip.id === shot.clip_id);
               return <div className={`plan-row ${selectedManualShot === index ? 'manual-selected-row' : ''}`} key={`${shot.clip_id}-${index}`}>
@@ -1058,6 +1115,10 @@ export default function ProjectPage() {
             {check.evidence.max_volume_db != null ? ` · peak ${check.evidence.max_volume_db} dBFS` : ''}
           </span>)}
         </div> : <p className="muted">No encoded MP4 inspection has been saved for this edit.</p>}
+        {timeline?.trace.story_validation?.violations.filter((item) =>
+          item.rule === 'pace_cut_density').map((item) => <p className="hint" role="status" key={item.rule}>
+            Planned pacing: {item.message} This is a cut-density warning; human review is still needed.
+          </p>)}
         <div className="grid cols-3">
           <div className="card stat">
             <div className="label">Usable clips</div>
@@ -1204,6 +1265,8 @@ export default function ProjectPage() {
               </a>
             </div>
           </div>
+        ) : renders.some((candidate) => candidate.requires_review) ? (
+          <div className="empty" role="status">A rendered candidate is available below. Review its video and validation checks before promoting it.</div>
         ) : project.render_status === 'complete' ? (
           <div className="empty" role="status">The job completed, but its MP4 is not available in storage. Run processing again to create a new export.</div>
         ) : (
@@ -1223,7 +1286,7 @@ export default function ProjectPage() {
               return (
                 <article className="card" key={render.id}>
                   <div className="row" style={{ justifyContent: 'space-between' }}>
-                    <strong>{render.is_current ? 'Current render' : 'Previous render'} · {render.platform ? `${render.platform} export` : 'Master render'} · v{renderJob?.prompt_version ?? '—'}</strong>
+                    <strong>{render.is_current ? 'Current render' : render.requires_review ? 'Candidate · review before promotion' : 'Previous render'} · {render.platform ? `${render.platform} export` : 'Master render'} · v{renderJob?.prompt_version ?? '—'}</strong>
                     <Badge tone={render.status === 'complete' ? 'ok' : 'warn'}>{render.status}</Badge>
                   </div>
                   {render.preview_url ? (
@@ -1235,6 +1298,9 @@ export default function ProjectPage() {
                     <span>{render.duration != null ? formatDuration(render.duration) : '—'}</span>
                     {render.file_size_bytes != null && <span>{formatBytes(render.file_size_bytes)}</span>}
                     {render.preview_url && <a className="btn small" href={`${mediaUrl(render.preview_url)}?download=true`} download>Download MP4</a>}
+                  {!render.is_current && render.promotion_available &&
+                    <button className="btn secondary small" type="button" disabled={busy || running}
+                      onClick={() => void promoteCandidate(render.id)}>Promote after review</button>}
                   </div>
                   {renderJob?.prompt_snapshot && <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>{renderJob.prompt_snapshot}</p>}
                 </article>

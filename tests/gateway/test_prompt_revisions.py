@@ -47,6 +47,165 @@ async def _seed_successful_render(harness: AppHarness, project_id: str, job_id: 
 
 
 @pytest.mark.asyncio
+async def test_manual_draft_survives_reload_and_keeps_successful_render(
+    harness: AppHarness, media: MediaFixtures,
+) -> None:
+    project = await _project_with_clip(harness, media)
+    first = await harness.client.post(f"/projects/{project['id']}/pipeline")
+    assert first.status_code == 202, first.text
+    render_id = await _seed_successful_render(harness, project["id"], first.json()["job_id"])
+    before = (await harness.client.get(f"/projects/{project['id']}")).json()
+    clip_id = before["clips"][0]["id"]
+    draft = {"shots": [{"clip_id": clip_id, "source_in_ms": 0,
+                         "source_out_ms": 1000}], "captions": None}
+    response = await harness.client.put(f"/projects/{project['id']}/manual-draft", json={
+        "timeline": draft, "expected_prompt_version": before["prompt_version"],
+        "expected_draft_revision": before["manual_draft_revision"],
+    })
+    assert response.status_code == 200, response.text
+    restored = (await harness.client.get(f"/projects/{project['id']}")).json()
+    assert restored["manual_draft"]["shots"][0]["clip_id"] == clip_id
+    assert restored["manual_draft"]["shots"][0]["source_out_ms"] == 1000
+    assert restored["manual_draft_prompt_version"] == before["prompt_version"]
+    assert restored["manual_draft_revision"] == before["manual_draft_revision"] + 1
+    assert restored["render_url"] == f"/api/v1/render/{render_id}/download"
+    assert restored["prompt_version"] == before["prompt_version"]
+
+    stale = await harness.client.put(f"/projects/{project['id']}/manual-draft", json={
+        "timeline": draft, "expected_prompt_version": before["prompt_version"],
+        "expected_draft_revision": before["manual_draft_revision"],
+    })
+    assert stale.status_code == 409
+    assert (await harness.client.get(f"/projects/{project['id']}")).json()["manual_draft_revision"] == restored["manual_draft_revision"]
+    wrong_version = await harness.client.put(f"/projects/{project['id']}/manual-draft", json={
+        "timeline": draft, "expected_prompt_version": before["prompt_version"] + 1,
+        "expected_draft_revision": restored["manual_draft_revision"],
+    })
+    assert wrong_version.status_code == 409
+    assert (await harness.client.get(f"/projects/{project['id']}")).json()["manual_draft"]["shots"][0]["source_out_ms"] == 1000
+
+
+@pytest.mark.asyncio
+async def test_manual_draft_rejects_missing_source_and_clears_explicitly(
+    harness: AppHarness, media: MediaFixtures,
+) -> None:
+    project = await _project_with_clip(harness, media)
+    detail = (await harness.client.get(f"/projects/{project['id']}")).json()
+    bad = await harness.client.put(f"/projects/{project['id']}/manual-draft", json={
+        "timeline": {"shots": [{"clip_id": "absent", "source_in_ms": 0,
+                                 "source_out_ms": 1000}]},
+        "expected_prompt_version": detail["prompt_version"], "expected_draft_revision": 0,
+    })
+    assert bad.status_code == 409
+    assert (await harness.client.get(f"/projects/{project['id']}")).json()["manual_draft"] is None
+    bad_title = await harness.client.put(f"/projects/{project['id']}/manual-draft", json={
+        "timeline": {"shots": [{"clip_id": detail["clips"][0]["id"], "source_in_ms": 0,
+                                 "source_out_ms": 1000}],
+                     "titles": [{"overlay_index": 0, "text": "Too late", "start_s": 1,
+                                 "end_s": 2, "position": "lower_third"}]},
+        "expected_prompt_version": detail["prompt_version"], "expected_draft_revision": 0,
+    })
+    assert bad_title.status_code == 409
+    clip_id = detail["clips"][0]["id"]
+    saved = await harness.client.put(f"/projects/{project['id']}/manual-draft", json={
+        "timeline": {"shots": [{"clip_id": clip_id, "source_in_ms": 0,
+                                 "source_out_ms": 1000}]},
+        "expected_prompt_version": detail["prompt_version"], "expected_draft_revision": 0,
+    })
+    assert saved.status_code == 200, saved.text
+    cleared = await harness.client.put(f"/projects/{project['id']}/manual-draft", json={
+        "timeline": None, "expected_prompt_version": detail["prompt_version"],
+        "expected_draft_revision": saved.json()["draft_revision"],
+    })
+    assert cleared.status_code == 200, cleared.text
+    assert (await harness.client.get(f"/projects/{project['id']}")).json()["manual_draft"] is None
+
+
+@pytest.mark.asyncio
+async def test_reviewed_candidate_can_be_promoted_without_deleting_previous_render(
+    harness: AppHarness, media: MediaFixtures,
+) -> None:
+    from app.models import Job, Project
+    from app.models.render import Render
+
+    project = await _project_with_clip(harness, media)
+    first = await harness.client.post(f"/projects/{project['id']}/pipeline")
+    assert first.status_code == 202
+    prior_id = await _seed_successful_render(harness, project["id"], first.json()["job_id"])
+    revision = await harness.client.post(f"/projects/{project['id']}/revisions", json={
+        "prompt": "A calmer eight second event recap", "target_platform": "general",
+        "edit_options": {"target_duration_s": 8}, "idempotency_key": "review-candidate-001",
+        "expected_prompt_version": 1,
+    })
+    assert revision.status_code == 202, revision.text
+    candidate_id = "candidate_needs_review"
+    path = harness.storage.root / "renders" / project["id"] / "candidate.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"fixture-candidate" * 100)
+    async with harness.session_maker() as db:
+        job = await db.get(Job, revision.json()["job_id"])
+        row = await db.get(Project, project["id"])
+        job.state = "succeeded"
+        job.result = {"render_quality_status": "warning", "brief_validation_status": "unavailable"}
+        row.status = "complete"
+        row.story_judgement = {"current_render_id": prior_id,
+                               "promotion_pending_render_id": candidate_id}
+        db.add(Render(id=candidate_id, project_id=project["id"], job_id=job.id,
+                      status="complete", resolution="1080x1920", format="mp4",
+                      output_path=str(path), file_size_bytes=path.stat().st_size,
+                      duration=8, created_at=datetime.now(timezone.utc)))
+        await db.commit()
+    detail = (await harness.client.get(f"/projects/{project['id']}")).json()
+    assert detail["render_url"] == f"/api/v1/render/{prior_id}/download"
+    candidate = next(item for item in detail["renders"] if item["id"] == candidate_id)
+    assert candidate["requires_review"] and candidate["promotion_available"]
+    accepted = await harness.client.post(f"/projects/{project['id']}/renders/{candidate_id}/promote",
+                                         json={"expected_prompt_version": 2})
+    assert accepted.status_code == 200, accepted.text
+    after = (await harness.client.get(f"/projects/{project['id']}")).json()
+    assert after["render_url"] == f"/api/v1/render/{candidate_id}/download"
+    assert len(after["renders"]) == 2
+    assert (harness.storage.root / "renders" / project["id"] / "previous.mp4").is_file()
+    stale = await harness.client.post(f"/projects/{project['id']}/renders/{prior_id}/promote",
+                                      json={"expected_prompt_version": 1})
+    assert stale.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_render_with_failed_validation_cannot_be_promoted(
+    harness: AppHarness, media: MediaFixtures,
+) -> None:
+    from app.models import Job, Project
+    from app.models.render import Render
+
+    project = await _project_with_clip(harness, media)
+    queued = await harness.client.post(f"/projects/{project['id']}/pipeline")
+    assert queued.status_code == 202
+    path = harness.storage.root / "renders" / project["id"] / "failed-check.mp4"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"fixture-candidate" * 100)
+    async with harness.session_maker() as db:
+        job = await db.get(Job, queued.json()["job_id"])
+        row = await db.get(Project, project["id"])
+        job.state = "succeeded"
+        job.result = {"render_quality_status": "failed", "brief_validation_status": "passed"}
+        row.status = "complete"
+        row.story_judgement = {"current_render_id": None,
+                               "promotion_pending_render_id": "failed_check"}
+        db.add(Render(id="failed_check", project_id=project["id"], job_id=job.id,
+                      status="complete", resolution="1080x1920", format="mp4",
+                      output_path=str(path), file_size_bytes=path.stat().st_size,
+                      duration=8, created_at=datetime.now(timezone.utc)))
+        await db.commit()
+    detail = (await harness.client.get(f"/projects/{project['id']}")).json()
+    assert detail["render_url"] is None
+    assert not detail["renders"][0]["promotion_available"]
+    response = await harness.client.post(f"/projects/{project['id']}/renders/failed_check/promote",
+                                         json={"expected_prompt_version": 1})
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
 async def test_revision_keeps_project_uploads_options_and_previous_render(
     harness: AppHarness, media: MediaFixtures,
 ) -> None:

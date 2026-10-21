@@ -5,7 +5,8 @@ import json
 import pytest
 
 from orchestration.agents.story import DEFAULT_LIBRARY, StoryArchitect, StoryDesignError, StoryRefiner, TimelineValidator
-from orchestration.agents.story.validator import ActSpec
+from orchestration.agents.story.assembly import _source_ordered_progression_windows, window_energy
+from orchestration.agents.story.validator import ActSpec, ValidationConfig
 from services.context_composer.platform_rules import PLATFORM_SPECS
 from services.prompt_engine import IntentEngine
 from services.prompt_engine.lexical_extractor import LexicalIntentExtractor
@@ -231,6 +232,56 @@ def rules(timeline, acts=ACTS, clips=CLIPS, pace=Pace.MEDIUM, rejected=frozenset
 def test_valid_timeline_passes():
     tl = [seg(0, "k0", 0, 2, energy=4), seg(1, "k1", 2, 4, energy=5, hero=True), seg(2, "k2", 4, 6, "a2", 6.5)]
     assert rules(tl) == set()
+
+
+def test_ordered_beat_cut_density_is_reported_by_requested_pace_not_as_quality_proof():
+    tl = [seg(0, "k0", 0, 1.5), seg(1, "k1", 1.5, 3),
+          seg(2, "k2", 3, 4.5), seg(3, "k3", 4.5, 6, "a2", hero=True)]
+    validator = TimelineValidator()
+    slow = validator.validate(tl, ACTS, CLIPS, Pace.SLOW,
+                              config=ValidationConfig(explicit_scene_order=True))
+    fast = validator.validate(tl, ACTS, CLIPS, Pace.FAST,
+                              config=ValidationConfig(explicit_scene_order=True))
+    assert any(v.rule == ValidationRule.PACE_CUT_DENSITY and v.severity == "warning"
+               and "4 shots in 6.00s" in v.message for v in slow.violations)
+    assert not any(v.rule == ValidationRule.PACE_CUT_DENSITY for v in fast.violations)
+    assert slow.passed
+
+
+def test_inferred_rising_act_repairs_real_event_energy_drop_inside_measured_shots():
+    """Measured event-motion fixture from the isolated two-original-MOV failure."""
+    from shared.contracts.base import revalidate
+
+    clip = revalidate(
+        make_clip("event", 8, duration=36.216667),
+        energy_curve=(.4677, .6296, .8996, .7186, .8046, .7387, .8499, .955,
+                      .5847, .3368, .4071, .825, .5381, .859, .6517, .6122,
+                      .6021, .4775, .4104, .5308, .3318, .5415, .4617, .5576),
+        scene_cut_times_s=(9.25, 12.25, 15.75, 16.75, 18.5, 22.25, 23.75,
+                           25.5, 26.75, 28, 28.75, 29.75, 31.75, 33, 34.5, 35.5, 35.75),
+    )
+    original = [(10.241, 12.395), (19.295, 21.449)]
+    profile = DEFAULT_LIBRARY.get("event").validation
+    assert not TimelineValidator._direction_ok(
+        "rise", [window_energy(clip, *w) for w in original], profile)[0]
+    repaired = _source_ordered_progression_windows(clip, original, "rise", profile)
+    assert repaired != original
+    assert repaired[0][1] <= repaired[1][0]
+    assert all(not any(start < cut < end for cut in clip.scene_cut_times_s)
+               for start, end in repaired)
+    assert TimelineValidator._direction_ok(
+        "rise", [window_energy(clip, *w) for w in repaired], profile)[0]
+
+
+def test_progression_repair_does_not_cross_every_short_measured_scene():
+    from shared.contracts.base import revalidate
+
+    clip = revalidate(make_clip("short_montage", 5, duration=6),
+                      scene_cut_times_s=(1, 2, 3, 4, 5),
+                      energy_curve=(1.0, .2, .2, .2, .2, .2))
+    original = [(0, 2), (4, 6)]
+    assert _source_ordered_progression_windows(
+        clip, original, "rise", DEFAULT_LIBRARY.get("event").validation) == original
 
 
 def test_each_rule_fires():

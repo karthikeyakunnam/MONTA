@@ -73,6 +73,27 @@ class ProjectUpdate(BaseModel):
     edit_options: EditOptions | None = None
 
 
+class ManualDraftSave(BaseModel):
+    timeline: ManualTimeline | None
+    expected_prompt_version: int = Field(ge=1)
+    expected_draft_revision: int = Field(ge=0)
+
+
+class ManualDraftSaved(BaseModel):
+    timeline: ManualTimeline | None
+    prompt_version: int
+    draft_revision: int
+
+
+class PromoteRenderRequest(BaseModel):
+    expected_prompt_version: int = Field(ge=1)
+
+
+class PromoteRenderResult(BaseModel):
+    render_id: str
+    status: Literal["promoted"] = "promoted"
+
+
 class RevisionCreate(BaseModel):
     prompt: str = Field(..., min_length=3, max_length=4000)
     target_platform: Literal[PLATFORMS] = "instagram"  # type: ignore[valid-type]
@@ -206,6 +227,8 @@ class RenderOut(BaseModel):
     id: str
     job_id: str | None = None
     is_current: bool = False
+    requires_review: bool = False
+    promotion_available: bool = False
     status: str
     resolution: str
     format: str
@@ -217,6 +240,9 @@ class RenderOut(BaseModel):
 
 
 class ProjectDetail(ProjectOut):
+    manual_draft: ManualTimeline | None = None
+    manual_draft_prompt_version: int | None = None
+    manual_draft_revision: int = 0
     clips: list[ClipOut] = []
     jobs: list[JobOut] = []
     quota: list[QuotaClassOut] = []
