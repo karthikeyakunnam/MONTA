@@ -80,6 +80,26 @@ def test_people_present_near_stage_do_not_prove_stage_interaction():
         match_scene_beats((_beat(0, "stage interaction"),), {"event": clip}, 3)
 
 
+def test_adjacent_stage_action_uses_same_subject_not_next_scene():
+    """Fixture adapted from the real 22.7–23.3s stage observation pair."""
+    clip = _clip("event", [
+        (22.7, "A man wearing a yellow and white robe stands by a banner"),
+        (23.3, "The man wearing a yellow robe gives a speech in front of a stage"),
+        (23.77, "A crowd watches a screen in a different shot"),
+    ], duration=25, cuts=(22.25, 23.75))
+    anchors = _candidates(0, _beat(0, "stage interaction"), {"event": clip}, None)
+    assert len(anchors) == 1
+    assert anchors[0].evidence_times_s == (22.7, 23.3)
+    assert anchors[0].source_out_s < 23.75
+    assert anchors[0].evidence_basis == "stage_action_and_subject_continuity"
+
+    statue = revalidate(clip, frame_evidence=(
+        FrameEvidence(time_s=22.7, description="A yellow-robed statue by a banner", model_id="local:test"),
+        *clip.frame_evidence[1:],
+    ))
+    assert not _candidates(0, _beat(0, "stage interaction"), {"event": statue}, None)
+
+
 def test_source_blur_excludes_middle_of_sign_shot_without_claiming_scene_cut():
     clip = _clip("event", [(1.5, "Event banner beside road"),
                            (3.6, "Venue sign beside road"),
@@ -357,3 +377,30 @@ def test_short_shots_insufficient_for_duration_report_capacity_instead_of_stretc
     with pytest.raises(BeatMatchError, match="Short-shot feasibility: Ordered, nonrepeated"):
         match_scene_beats((_beat(0, "venue signage"),
                            _beat(1, "podium speaker")), {"event": clip}, 6)
+
+
+def test_short_real_action_can_be_brief_when_other_beat_supplies_total_duration():
+    signage = _clip("signage", [(0.5, "A venue sign"), (1.5, "A venue sign beside a banner"),
+                                (2.5, "A venue sign"), (3.5, "A venue sign beside a banner"),
+                                (4.5, "A venue sign"), (5.5, "A venue sign beside a banner"),
+                                (6.5, "A venue sign"), (7.5, "A venue sign beside a banner")],
+                    duration=8, cuts=(2, 4, 6))
+    greeting = _clip("greeting", [(0.4, "Two people greeting with a handshake"),
+                                   (1.2, "Two people greeting with a handshake")], duration=1.8)
+    selected = match_scene_beats((_beat(0, "venue signage"), _beat(1, "greetings")),
+                                 {"signage": signage, "greeting": greeting}, 8)
+    assert [item.beat_index for item in selected][-1] == 1
+    assert sum(item.source_out_s - item.source_in_s for item in selected) == pytest.approx(8)
+    assert selected[-1].source_out_s - selected[-1].source_in_s <= 1.8
+
+
+def test_banner_only_model_hallucination_does_not_anchor_venue_signage():
+    clip = _clip("event", [
+        (0.5, "People gathered in a tent with a banner that says Global TDP"),
+        (1.4, "People beside yellow curtains with a banner that says Global TDP"),
+        (2.5, "A large roadside billboard showing a man's face"),
+        (3.3, "People standing beside the large roadside billboard"),
+    ], duration=4, cuts=(2,))
+    anchors = _candidates(0, _beat(0, "venue signage"), {"event": clip}, None)
+    assert len(anchors) == 1
+    assert anchors[0].source_in_s >= 2

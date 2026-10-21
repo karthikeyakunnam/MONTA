@@ -21,6 +21,7 @@ import math
 import os
 import re
 import tempfile
+import time
 from collections import OrderedDict
 from pathlib import Path
 from typing import Protocol
@@ -120,10 +121,11 @@ class VideoIntelligenceTeam:
         self.frame_evidence_interval_s = frame_evidence_interval_s
         self.calibrator = calibrator
 
-    def cache_key(self, meta: TechnicalMetadata) -> str:
+    def cache_key(self, meta: TechnicalMetadata, *, ordered_beats: bool = False) -> str:
         vision_id = self.vision.model_id if self.vision else "none"
         return (f"{meta.fingerprint}|{SIGNAL_VERSION}|{FUSION_VERSION}|frame-evidence.v3:"
-                f"{self.max_frame_evidence}:{self.frame_evidence_interval_s}|{vision_id}")
+                f"{self.max_frame_evidence}:{self.frame_evidence_interval_s}|{vision_id}"
+                f"{'|ordered-beats.v1' if ordered_beats else ''}")
 
     async def enrich_short_scene_evidence(self, meta: TechnicalMetadata,
                                           clip: ClipIntelligence, beats) -> ClipIntelligence:
@@ -172,10 +174,20 @@ class VideoIntelligenceTeam:
                         anchor.is_anchor and anchor.clip_id == clip.clip_id and
                         0 <= start - anchor.source_out_s <= 0.5
                         for anchor in covered))
+                    # Sparse periodic sampling can land just beyond a measured
+                    # cut and miss the preceding short action entirely. Use
+                    # nearby human action only to choose another frame to
+                    # inspect; it does not label the unsampled source shot.
+                    words = set(re.findall(r"[a-z]+", item.description.casefold()))
+                    action_at_edge = (not here and
+                        min(abs(item.time_s - start), abs(item.time_s - end)) <= 0.5 and
+                        bool(words & {"person", "people", "man", "woman", "men", "women"}) and
+                        bool(words & {"raised", "raising", "dancing", "speaking", "presenting"}))
                     # A greeting gesture near a measured cut is a reason to
                     # inspect the next shot, never evidence that it continues.
                     score = max(score, (2 if item in here else 1) * (overlap + int(social)) +
-                                (2 if proximity or follows_anchor else 0))
+                                (2 if proximity or follows_anchor else 0),
+                                5 if action_at_edge and "stage" in need else 0)
                 beat_scores.append(score)
             if any(beat_scores):
                 spans.append((tuple(beat_scores), index, start, end, here))
@@ -222,10 +234,10 @@ class VideoIntelligenceTeam:
         return revalidate(clip, frame_evidence=tuple(sorted(augmented, key=lambda item: item.time_s)),
                           provenance=revalidate(clip.provenance, degraded=tuple(degraded)))
 
-    async def analyze(self, meta: TechnicalMetadata) -> ClipIntelligence:
+    async def analyze(self, meta: TechnicalMetadata, *, ordered_beats: bool = False) -> ClipIntelligence:
         with span("clip.analyze", duration_s=round(meta.duration_s, 2)) as sp:
             try:
-                result = await self._analyze(meta)
+                result = await self._analyze(meta, ordered_beats=ordered_beats)
             except BaseException as e:
                 m.CLIP_ANALYSIS.inc(outcome=type(e).__name__)
                 raise
@@ -234,8 +246,8 @@ class VideoIntelligenceTeam:
             sp.set(outcome=outcome, vision=bool(result.provenance.vision_model))
             return result
 
-    async def _analyze(self, meta: TechnicalMetadata) -> ClipIntelligence:
-        key = self.cache_key(meta)
+    async def _analyze(self, meta: TechnicalMetadata, *, ordered_beats: bool = False) -> ClipIntelligence:
+        key = self.cache_key(meta, ordered_beats=ordered_beats)
         if self.cache:
             cached = await self.cache.get(key)
             m.INTEL_CACHE.inc(result="hit" if cached is not None else "miss")
@@ -254,16 +266,18 @@ class VideoIntelligenceTeam:
             degraded = ("no vision provider configured",)
             m.VISION_DEGRADED.inc(reason="disabled")
         else:
-            times = keyframe_times(meta.duration_s, signals.peak_time_s, self.keyframe_count)
-            try:
-                images = await self.media.keyframes(meta, times, width=self.keyframe_width)
-                observation, arbitration = await self.vision.observe_with_arbitration(meta, images, times)
-            except (ProviderError, MediaToolError, asyncio.TimeoutError) as e:
-                logger.warning("vision analysis failed for %s: %s", meta.clip_id, e)
-                degraded = (f"vision failed: {type(e).__name__}: {e}",)
-                m.VISION_DEGRADED.inc(reason=type(e).__name__)
+            if not ordered_beats:
+                times = keyframe_times(meta.duration_s, signals.peak_time_s, self.keyframe_count)
+                try:
+                    images = await self.media.keyframes(meta, times, width=self.keyframe_width)
+                    observation, arbitration = await self.vision.observe_with_arbitration(meta, images, times)
+                except (ProviderError, MediaToolError, asyncio.TimeoutError) as e:
+                    logger.warning("vision analysis failed for %s: %s", meta.clip_id, e)
+                    degraded = (f"vision failed: {type(e).__name__}: {e}",)
+                    m.VISION_DEGRADED.inc(reason=type(e).__name__)
             describe_frame = getattr(self.vision, "describe_frame", None)
             if describe_frame is not None and self.max_frame_evidence > 0:
+                deadline = time.monotonic() + 150.0 if ordered_beats else None
                 # Short social actions can occur between three-second samples.
                 # Bound local inference while retaining roughly 1.5-second
                 # coverage on short clips and source-local timestamps.
@@ -276,9 +290,15 @@ class VideoIntelligenceTeam:
                     if len(frame_images) != len(frame_times):
                         degraded = (*degraded, "frame evidence incomplete: source frame extraction returned fewer images")
                     for at, frame in zip(frame_times, frame_images):
+                        if deadline is not None and time.monotonic() >= deadline:
+                            degraded = (*degraded, "ordered-beat frame analysis exhausted its 150s local budget")
+                            break
                         for attempt in range(2):
                             try:
-                                description = await describe_frame(meta, frame, at)
+                                request = describe_frame(meta, frame, at)
+                                description = (await asyncio.wait_for(
+                                    request, timeout=min(30.0, max(1.0, deadline - time.monotonic())))
+                                    if deadline is not None else await request)
                                 frame_evidence.append(FrameEvidence(
                                     time_s=at, description=description, model_id=self.vision.model_id))
                                 break
@@ -310,7 +330,8 @@ class VideoIntelligenceTeam:
             result = revalidate(result, provenance=revalidate(result.provenance, arbitration=arbitration))
         if self.calibrator is not None:
             result = self.calibrator.calibrate_clip(result)
-        vision_failed = self.vision is not None and (observation is None or bool(degraded))
+        vision_failed = self.vision is not None and (
+            (not frame_evidence if ordered_beats else observation is None) or bool(degraded))
         if self.cache and not vision_failed:  # never cache a degraded result; retry vision next time
             await self.cache.put(key, result)
         return result

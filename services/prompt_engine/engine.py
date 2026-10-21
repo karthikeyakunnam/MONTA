@@ -284,7 +284,9 @@ class IntentEngine:
         for dim in (*ENUMS, L.REFERENCE, "target_duration_s"):
             lex_field: Explained | None = getattr(lexical, dim)
             llm_field: LLMField | None = getattr(llm, dim)
-            merged, amb = self._merge_field(dim, lex_field, llm_field)
+            merged, amb = self._merge_field(
+                dim, lex_field, llm_field,
+                explicit_ambiguous=any(item.field == dim for item in lexical.ambiguities))
             updates[dim] = merged
             if amb:
                 ambiguities.append(amb)
@@ -323,7 +325,8 @@ class IntentEngine:
         })
 
     @staticmethod
-    def _merge_field(dim: str, lex: Explained | None, llm: LLMField | None) -> tuple[Explained | None, Ambiguity | None]:
+    def _merge_field(dim: str, lex: Explained | None, llm: LLMField | None,
+                     *, explicit_ambiguous: bool = False) -> tuple[Explained | None, Ambiguity | None]:
         if llm is None:
             return lex, None
         llm_value = llm.value.value if isinstance(llm.value, StrEnum) else llm.value
@@ -351,7 +354,7 @@ class IntentEngine:
                 "evidence": lex.evidence + (llm_ev,),
             }), None
 
-        if dim == L.PACE and any(
+        if dim == L.PACE and not explicit_ambiguous and any(
             evidence.source == "prompt" and evidence.span and
             any(word in evidence.span.casefold().split() for word in
                 ("calm", "slow", "gentle", "unhurried", "fast", "quick", "rapid", "aggressive"))

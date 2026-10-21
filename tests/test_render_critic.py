@@ -13,6 +13,30 @@ from shared.contracts.timeline import TextOverlayIR, TimelineIR, VideoSegmentIR
 
 
 @pytest.mark.asyncio
+async def test_truncated_output_reports_missing_late_cuts_without_frame_decode_error(tmp_path):
+    output = tmp_path / "short.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+        "color=c=blue:s=320x180:d=2:r=30", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        str(output),
+    ], check=True)
+    segments = tuple(VideoSegmentIR(
+        segment_id=f"shot-{index}", clip_id="source", source_path=str(output),
+        source_in_ms=0, source_out_ms=1000,
+        timeline_start_ms=index * 1000, timeline_end_ms=(index + 1) * 1000,
+        has_audio=False,
+    ) for index in range(3))
+    plan = TimelineIR(project_id="truncated", width=320, height=180, fps=30,
+                      video_segments=segments, total_duration_ms=3000)
+    report = await inspect_render(str(output), plan, storage_root=str(tmp_path), actual_duration_s=2)
+    checks = {item["name"]: item for item in report["checks"]}
+    assert checks["duration_and_frame"]["status"] == "failed"
+    assert checks["exposure_cuts"]["status"] == "unavailable"
+    assert checks["exposure_cuts"]["evidence"]["sampled_boundaries"] == 1
+    assert report["status"] == "failed"
+
+
+@pytest.mark.asyncio
 async def test_encoded_title_check_catches_missing_asset_and_accepts_rendered_asset(tmp_path):
     source = tmp_path / "source.mp4"
     subprocess.run([

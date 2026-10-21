@@ -117,7 +117,8 @@ class MontaPipeline:
         meta = ctx.pack.metadata_for(task.params["clip_id"])
         if meta is None:
             raise PipelineError(f"no metadata for clip {task.params['clip_id']}")
-        return await self.team.analyze(meta)
+        return await self.team.analyze(
+            meta, ordered_beats=bool(ctx.pack.intent.creative_brief.scene_beats))
 
     async def _reconcile_intent(self, task: TaskSpec, ctx: ExecutionContext) -> IntentAnalysis:
         analyzed = {**ctx.pack.clip_intelligence, **{c.clip_id: c for c in ctx.dependency_outputs(task).values()}}
@@ -153,7 +154,10 @@ class MontaPipeline:
                     beat.description.casefold().strip()
                     for beat in ctx.pack.intent.creative_brief.scene_beats)
                 for meta in ctx.pack.video_metadata:
-                    cached = await self.team.cache.get(self.team.cache_key(meta) + beats_key)
+                    cached = await self.team.cache.get(
+                        self.team.cache_key(meta, ordered_beats=True) + beats_key)
+                    if cached is None:
+                        cached = await self.team.cache.get(self.team.cache_key(meta) + beats_key)
                     current = analyzed.get(meta.clip_id)
                     if cached is not None and current is not None:
                         # Keep distinct source frames from both real analyses.
@@ -210,7 +214,7 @@ class MontaPipeline:
                             # observations even when this plan still fails.
                             # Future runs may add independent source frames.
                             await self.team.cache.put(
-                                self.team.cache_key(meta) + beats_key, clip)
+                                self.team.cache_key(meta, ordered_beats=True) + beats_key, clip)
                 try:
                     story = await self.architect.design(
                         ctx.pack, avoid_patterns=task.params.get("avoid_patterns", ()))
@@ -458,6 +462,27 @@ class MontaPipeline:
             audio_segments=audio_segments,
             segment_crops=segment_crops,
         )
+        requested = story.requested_duration_s
+        if requested is not None and abs(timeline.render_duration_s - requested) > 0.05:
+            from shared.contracts.timeline import TransitionType
+
+            explicit_transition = (any(
+                item.category == "transition" and item.priority == "required"
+                for item in pack.intent.creative_brief.directives) or
+                any(key in (style_override or {}) for key in ("transition", "transitions")))
+            # Inferred crossfades consume encoded time. When no transition was
+            # requested, keep the user's exact duration and source ranges by
+            # using straight cuts. An explicit overlap must be replanned, not
+            # silently shortened or discarded.
+            if not explicit_transition and abs(timeline.duration_s - requested) <= 0.05:
+                timeline = revalidate(timeline, video_segments=tuple(
+                    revalidate(segment, transition_in=TransitionType.CUT, transition_in_ms=0)
+                    for segment in timeline.video_segments))
+            if abs(timeline.render_duration_s - requested) > 0.05:
+                raise ValueError(
+                    f"Requested duration {requested:.2f}s would encode as "
+                    f"{timeline.render_duration_s:.2f}s after transition overlap; "
+                    "replan shot lengths or choose cuts before rendering")
         source_durations_ms = {meta.clip_id: round(meta.duration_s * 1000) for meta in pack.video_metadata}
         validation = EditPlanValidator().validate(timeline, source_durations_ms=source_durations_ms)
         validation.raise_if_invalid()

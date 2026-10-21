@@ -37,11 +37,12 @@ async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
     output = check_input_path(path, media.allowed_roots)
     probe_data = json.loads(await media._run([
         media.ffprobe, "-v", "error", *PROTOCOL_ARGS, "-show_entries",
-        "format=duration:stream=codec_type,width,height", "-of", "json", str(output),
+        "format=duration:stream=codec_type,width,height,duration", "-of", "json", str(output),
     ]))
     video_stream = next((stream for stream in probe_data.get("streams", [])
                          if stream.get("codec_type") == "video"), {})
     encoded_duration = float(probe_data.get("format", {}).get("duration", 0))
+    video_duration = float(video_stream.get("duration") or encoded_duration)
     duration_tolerance = max(0.2, 2 / timeline.fps)
     checks: list[dict] = [{
         "name": "duration_and_frame", "status": "passed" if (
@@ -138,11 +139,13 @@ async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
     all_boundaries = [segment.timeline_start_ms / 1000 for segment in timeline.video_segments[1:]]
     boundaries = all_boundaries if len(all_boundaries) <= 24 else [
         all_boundaries[round(i * (len(all_boundaries) - 1) / 23)] for i in range(24)]
-    sample_times = [time for boundary in boundaries
-                    for time in (max(0.0, boundary - 0.12), min(actual_duration_s - 0.02, boundary + 0.12))]
+    visible_boundaries = [boundary for boundary in boundaries
+                          if 0.12 <= boundary <= video_duration - 0.15]
+    sample_times = [time for boundary in visible_boundaries
+                    for time in (boundary - 0.12, boundary + 0.12)]
     sampled = await media.keyframes(meta, sample_times, width=160) if sample_times else []
     jumps = []
-    for index, boundary in enumerate(boundaries):
+    for index, boundary in enumerate(visible_boundaries):
         left, right = _image(sampled[index * 2]), _image(sampled[index * 2 + 1])
         jump = abs(float(left.mean()) - float(right.mean()))
         if jump > 35:
@@ -174,10 +177,11 @@ async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
                         else "output_change_exceeds_source" if jump > source_jump + 15
                         else "source_change_reduced_in_output")
             jumps.append(entry)
-    checks.append({"name": "exposure_cuts", "status": "warning" if jumps else "passed",
+    checks.append({"name": "exposure_cuts", "status": "unavailable" if len(visible_boundaries) < len(boundaries)
+                   else "warning" if jumps else "passed",
                    "detail": "Adjacent cut-frame brightness compared with the original source frames; scene changes can be intentional",
                    "evidence": {"threshold": 35, "jumps": jumps,
-                                "sampled_boundaries": len(boundaries),
+                                "sampled_boundaries": len(visible_boundaries),
                                 "total_boundaries": len(all_boundaries)}})
 
     if meta.has_audio:

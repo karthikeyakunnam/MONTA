@@ -493,6 +493,7 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 except Exception as critic_err:
                     logger.warning("Critic evaluation skipped: %s", critic_err)
 
+                manual_edit = None
                 if edit_options.get("manual_timeline"):
                     from services.timeline_generator.manual import ManualTimeline, apply_manual_timeline
                     metadata = {item.clip_id: item for item in result.context_pack.video_metadata}
@@ -516,6 +517,10 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                 render_dir = settings.storage_root_path / "renders" / project_id
                 render_dir.mkdir(parents=True, exist_ok=True)
                 render_brief = _refresh_prompt_text_styles(result.context_pack.intent.creative_brief, prompt)
+                if manual_edit is not None and manual_edit.titles is not None:
+                    from services.timeline_generator.manual import apply_manual_title_overrides
+                    render_brief = apply_manual_title_overrides(
+                        render_brief, manual_edit.titles, timeline_ir.render_duration_s)
                 overlays, grain_strength, unavailable_effects = _materialize_prompt_visuals(
                     render_brief,
                     timeline_ir.total_duration_ms,
@@ -523,7 +528,9 @@ async def _run(job_id: str, project_id: str, trace_id: str | None) -> dict:
                     job_id,
                     timeline_ir.width,
                     timeline_ir.height,
-                    title_position=edit_options.get("title_position"),
+                    title_position=(None if manual_edit is not None and manual_edit.titles is not None
+                                    else edit_options.get("title_position")),
+                    manual_positions=manual_edit is not None and manual_edit.titles is not None,
                 )
                 timeline_ir = revalidate(
                     timeline_ir,
@@ -1235,7 +1242,8 @@ def _refresh_prompt_text_styles(brief, prompt: str):
 
 def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str,
                                 width: int = 1080, height: int = 1920,
-                                title_position: str | None = None):
+                                title_position: str | None = None,
+                                manual_positions: bool = False):
     """Rasterize exact prompt text and return compiler-ready overlays plus honest effect status."""
     from services.edit_executor.text_overlay import render_text_overlay_asset
     from shared.contracts.base import revalidate
@@ -1249,8 +1257,11 @@ def _materialize_prompt_visuals(brief, duration_ms: int, render_dir, job_id: str
 
     for index, requirement in enumerate(requirements):
         if requirement.role == "title":
-            placed = revalidate(requirement, position=title_position or requirement.position or chosen_title_position)
-        elif requirement.role == "subtitle" and chosen_title_position == "lower_third":
+            requested_position = requirement.position
+            safe_position = (chosen_title_position if not manual_positions and height > width and requested_position == "center"
+                             and title_position is None else requested_position or chosen_title_position)
+            placed = revalidate(requirement, position=title_position or safe_position)
+        elif requirement.role == "subtitle" and chosen_title_position == "lower_third" and not manual_positions:
             placed = revalidate(requirement, position="bottom")
         else:
             placed = requirement

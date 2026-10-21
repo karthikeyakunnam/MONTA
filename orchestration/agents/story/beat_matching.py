@@ -150,8 +150,27 @@ def _stage_interaction(value: str) -> bool:
         "interact", "interacting", "talk", "talking", "speak", "speaking",
         "presenting", "receive", "receiving", "perform", "performing",
         "greet", "greeting", "handshake", "handing", "addressing",
+        "speech",
     }) or (raised_hand and bool(words & {"stage", "platform"}) and
            bool(words & {"person", "man", "woman", "speaker"}))
+
+
+def _shared_visible_attire(first: str, second: str) -> bool:
+    """Conservative continuity cue, never independent proof of an action."""
+    person = {"person", "people", "man", "woman", "men", "women"}
+    excluded = {"statue", "idol", "painting", "screen", "poster"}
+    if not (_words(first) & person and _words(second) & person):
+        return False
+    if _words(first) & excluded or _words(second) & excluded:
+        return False
+    attire = re.compile(
+        r"\b(yellow|orange|blue|red|white|black|green)\b"
+        r"(?:\s+[a-z]+){0,2}\s+\b(robe|sash|scarf|jacket|suit)\b",
+        re.IGNORECASE,
+    )
+    signatures = lambda value: {(match.group(1).casefold(), match.group(2).casefold())
+                                for match in attire.finditer(value)}
+    return bool(signatures(first) & signatures(second))
 
 
 def _person_on_stage(value: str) -> bool:
@@ -299,7 +318,14 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
         words = _words(description)
         signage_is_background = "signage" in primary and bool(
             words & {"stage", "podium", "audience", "screen"})
-        return bool(primary & _concepts(description)) and not signage_is_background and (
+        # A local model called source branding a banner on tent curtains in
+        # a measured source shot that contained no physical sign. Treat that
+        # weak combination as context; other visible banners remain eligible.
+        distinct_sign = "signage" not in primary or bool(words & {
+            "sign", "signs", "signage", "billboard", "billboards",
+            "poster", "posters", "placard", "placards"}) or (
+            "banner" in words and not words & {"tent", "curtain", "curtains"})
+        return bool(primary & _concepts(description)) and distinct_sign and not signage_is_background and (
             not requires_stage_action or _stage_interaction(description))
     found = []
     for clip_id, clip in sorted(clips.items()):
@@ -333,15 +359,23 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
                     (_stage_interaction(left.description) and _stage_interaction(right.description)) or
                     (_stage_interaction(left.description) and _person_on_stage(right.description)) or
                     (_stage_interaction(right.description) and _person_on_stage(left.description)))
+                stage_continuity = requires_stage_action and (
+                    right.time_s - left.time_s <= 1.0 and
+                    (_stage_interaction(left.description) or
+                     _stage_interaction(right.description)) and
+                    _shared_visible_attire(left.description, right.description))
+                if stage_continuity and not stage_pair:
+                    support.add("stage")
+                    evidence_basis = "stage_action_and_subject_continuity"
                 if stage_pair and not (
                         _stage_interaction(left.description) and _stage_interaction(right.description)):
                     evidence_basis = "stage_person_and_action"
                 if not (support & primary) or (
                         evidence_basis not in {"gesture_and_interaction", "gesture_and_social_context",
-                                               "stage_person_and_action"} and not (
+                                               "stage_person_and_action", "stage_action_and_subject_continuity"} and not (
                             supports_primary(left.description) and supports_primary(right.description))):
                     continue
-                if requires_stage_action and not stage_pair:
+                if requires_stage_action and not (stage_pair or stage_continuity):
                     continue
                 # Anchor the first supporting observation near the beginning of
                 # the requested beat. A centred window can open on unrelated
@@ -371,8 +405,9 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
                     source_out = source_in + duration_s
                 if not (source_in <= left.time_s < source_out and source_in <= right.time_s < source_out):
                     continue
-                if not any(start <= source_in and source_out <= end
-                           for start, end in bounds):
+                same_span = next(((start, end) for start, end in bounds
+                                  if start <= source_in and source_out <= end), None)
+                if same_span is None:
                     continue
                 # A source file may already contain a montage. Two matching
                 # descriptions cannot establish continuous action across a
@@ -387,7 +422,8 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
                 between = [item for item in evidence
                            if source_in <= item.time_s < source_out]
                 if any(not (supports_primary(item.description) or
-                            (requires_stage_action and _person_on_stage(item.description)) or
+                            (requires_stage_action and (_person_on_stage(item.description) or
+                             (stage_continuity and item in (left, right)))) or
                             ("greeting" in requested and
                              (_greeting_gesture(item.description) or
                               _interpersonal_action(item.description) or
@@ -401,7 +437,7 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
                 # conservative margin instead of claiming that edge as clean.
                 if any(source_in - 0.25 <= item.time_s < source_in or
                        source_out <= item.time_s < source_out + 0.25
-                       for item in evidence if not (
+                       for item in evidence if same_span[0] <= item.time_s < same_span[1] and not (
                            supports_primary(item.description) or
                            ("greeting" in requested and
                             (_greeting_gesture(item.description) or
@@ -417,7 +453,8 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
                     unmatched_concepts=tuple(sorted(requested - support)),
                     relevance=sum(CONCEPT_WEIGHT[concept] for concept in support) - (
                         1 if evidence_basis in {"gesture_and_interaction",
-                                                "gesture_and_social_context"} else 0),
+                                                "gesture_and_social_context",
+                                                "stage_action_and_subject_continuity"} else 0),
                     evidence_basis=evidence_basis,
                 ))
     if duration_s is None:
@@ -462,8 +499,16 @@ def _variable_scene_beats(beats: Sequence[SceneBeatRequirement],
                 "supported by two timestamped observations within one measured scene. "
                 f"Evidence checked: {_missing_evidence_detail(_requested(beats[index].description), clips, 0)}")
     grouped: list[list[tuple[BeatWindow, ...]]] = []
-    minimum_beat_s = min(3.0, max(1.0, target_duration_s / len(beats) * 0.5))
+    preferred_minimum_s = min(3.0, max(1.0, target_duration_s / len(beats) * 0.5))
+    minimum_by_beat_s = []
     for options in choices:
+        # A short but genuine event must not be rejected solely because a
+        # uniform beat allotment is longer than all distinct available shots.
+        # The total target remains mandatory; other beats must supply time.
+        unique_ranges = {(w.clip_id, w.source_in_s, w.source_out_s) for w in options}
+        available_s = sum(end - start for _, start, end in unique_ranges)
+        minimum_beat_s = min(preferred_minimum_s, available_s)
+        minimum_by_beat_s.append(minimum_beat_s)
         groups = []
         for count in range(1, min(7, len(options)) + 1):
             for subset in combinations(options, count):
@@ -491,7 +536,15 @@ def _variable_scene_beats(beats: Sequence[SceneBeatRequirement],
         expanded.sort(key=lambda group: (-min(target_duration_s,
                                              sum(w.source_out_s - w.source_in_s for w in group)),
                                          len(group), -sum(w.relevance for w in group)))
-        beam = expanded[:100]
+        # A capacity-only beam can fill with late source windows and discard
+        # every early state that leaves room for a later beat from that source.
+        # Retain both high-capacity and early-ending states; all still obey the
+        # same semantic anchors and source-order constraints.
+        early = sorted(expanded, key=lambda group: (
+            sum(max(w.source_out_s for w in group if w.clip_id == clip_id)
+                for clip_id in {w.clip_id for w in group}),
+            -sum(w.source_out_s - w.source_in_s for w in group), len(group)))
+        beam = list(dict.fromkeys((*expanded[:60], *early[:40])))[:100]
         if not beam:
             raise BeatMatchError("Required beats have no nonoverlapping, source-ordered short shots")
     feasible = []
@@ -513,20 +566,21 @@ def _variable_scene_beats(beats: Sequence[SceneBeatRequirement],
     beat_duration_ms = {index: round(sum(w.source_out_s - w.source_in_s for w in chosen
                                          if w.beat_index == index) * 1000)
                         for index in range(len(beats))}
-    minimum_beat_ms = round(minimum_beat_s * 1000)
+    minimum_beat_ms = {index: round(value * 1000)
+                       for index, value in enumerate(minimum_by_beat_s)}
     for index in range(len(trimmed) - 1, -1, -1):
         item = trimmed[index]
         if excess_ms <= 0:
             break
         removable_end = max(0, round((item.source_out_s - item.evidence_times_s[1] - 0.08) * 1000))
         remove = min(excess_ms, removable_end,
-                     max(0, beat_duration_ms[item.beat_index] - minimum_beat_ms))
+                     max(0, beat_duration_ms[item.beat_index] - minimum_beat_ms[item.beat_index]))
         item = replace(item, source_out_s=round(item.source_out_s - remove / 1000, 3))
         excess_ms -= remove
         beat_duration_ms[item.beat_index] -= remove
         removable_start = max(0, round((item.evidence_times_s[0] - item.source_in_s - 0.08) * 1000))
         remove = min(excess_ms, removable_start,
-                     max(0, beat_duration_ms[item.beat_index] - minimum_beat_ms))
+                     max(0, beat_duration_ms[item.beat_index] - minimum_beat_ms[item.beat_index]))
         item = replace(item, source_in_s=round(item.source_in_s + remove / 1000, 3))
         excess_ms -= remove
         beat_duration_ms[item.beat_index] -= remove

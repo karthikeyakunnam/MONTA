@@ -49,6 +49,18 @@ def test_explicit_event_plan_and_encoded_asset_are_checked_without_fabricating_s
     assert checks["encoded_scene_meaning"] == checks["independent_text_ocr"] == "unavailable"
 
 
+def test_requested_spoken_dialogue_and_phrase_cuts_are_never_inferred_from_audio_stream():
+    brief = LexicalIntentExtractor().extract(
+        "Keep natural source speech audible and avoid cutting spoken phrases.").creative_brief
+    required = {(item.category, item.value) for item in brief.directives if item.priority == "required"}
+    assert {("audio", "source_audio"), ("audio", "speech_present"),
+            ("audio", "speech_boundaries")} <= required
+    report = validate_brief_output(brief, _timeline(), _encoded(), requested_duration_s=25)
+    checks = {item["name"]: item["status"] for item in report["checks"]}
+    assert checks["source_audio_plan"] == checks["encoded_audio_stream"] == "passed"
+    assert checks["spoken_dialogue_present"] == checks["spoken_phrase_cut_alignment"] == "unavailable"
+
+
 def test_wrong_encoded_duration_or_story_order_fails_without_promotion():
     brief = LexicalIntentExtractor().extract(EVENT_ACCEPTANCE_PROMPT).creative_brief
     wrong = _timeline()

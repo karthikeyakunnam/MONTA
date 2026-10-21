@@ -150,6 +150,8 @@ export interface ManualTimeline {
   music_volume?: number | null;
   music_ducking?: boolean | null;
   captions?: Array<{ start: number; end: number; text: string }> | null;
+  titles?: Array<{ overlay_index: number; text: string; start_s: number; end_s: number;
+    position: 'center' | 'below_title' | 'top' | 'lower_third' | 'bottom' }> | null;
 }
 
 export interface TimelineArtifact {
@@ -183,6 +185,14 @@ export interface TimelineArtifact {
       timeline_end_ms: number;
       volume: number;
       ducking: boolean;
+    }>;
+    text_overlays?: Array<{
+      overlay_id: string;
+      role: string;
+      text: string;
+      start_ms: number;
+      end_ms: number;
+      position: 'center' | 'below_title' | 'top' | 'lower_third' | 'bottom';
     }>;
   };
   trace: {

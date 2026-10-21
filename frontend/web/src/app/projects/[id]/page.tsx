@@ -31,6 +31,7 @@ import {
   type EditOptions,
   type Job,
   type ManualShot,
+  type ManualTimeline,
   type ProjectDetail,
   type TimelineArtifact,
   type UploadLimits,
@@ -52,7 +53,9 @@ const STYLE_PRESETS = ['cinematic', 'trailer', 'vlog', 'hype', 'montage'];
 const ACTIVE_JOB_STATES = ['pending', 'queued', 'running'];
 const defaultAspect = (platform: string) => ['instagram', 'tiktok', 'youtube_short'].includes(platform) ? '9:16' : '16:9';
 type ManualCaption = { start: number; end: number; text: string };
-type ManualDraftSnapshot = { shots: ManualShot[]; musicVolume: number; musicDucking: boolean | null; captions: ManualCaption[] | null };
+type ManualTitle = NonNullable<ManualTimeline['titles']>[number];
+type ManualDraftSnapshot = { shots: ManualShot[]; musicVolume: number; musicDucking: boolean | null;
+  captions: ManualCaption[] | null; titles: ManualTitle[] | null };
 
 function optionsForRevision(options: EditOptions): EditOptions {
   return {
@@ -97,11 +100,13 @@ export default function ProjectPage() {
   const [revisionBusy, setRevisionBusy] = useState(false);
   const [keepManualOverride, setKeepManualOverride] = useState<boolean | null>(null);
   const [manualShots, setManualShots] = useState<ManualShot[] | null>(null);
+  const [selectedManualShot, setSelectedManualShot] = useState(0);
   const [manualUndo, setManualUndo] = useState<ManualDraftSnapshot[]>([]);
   const [manualRedo, setManualRedo] = useState<ManualDraftSnapshot[]>([]);
   const [manualMusicVolume, setManualMusicVolume] = useState(1);
   const [manualMusicDucking, setManualMusicDucking] = useState<boolean | null>(null);
   const [manualCaptions, setManualCaptions] = useState<ManualCaption[] | null>(null);
+  const [manualTitles, setManualTitles] = useState<ManualTitle[] | null>(null);
   const [compareVersionA, setCompareVersionA] = useState('');
   const [compareVersionB, setCompareVersionB] = useState('');
   const revisionLock = useRef(false);
@@ -207,7 +212,8 @@ export default function ProjectPage() {
   const changeManual = (next: ManualShot[]) => {
     if (!manualShots) return;
     setManualUndo((history) => [...history.slice(-29), {
-      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions,
+      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking,
+      captions: manualCaptions, titles: manualTitles,
     }]);
     setManualRedo([]);
     setManualShots(next);
@@ -216,7 +222,8 @@ export default function ProjectPage() {
   const changeManualMusic = (volume: number, ducking: boolean | null) => {
     if (!manualShots) return;
     setManualUndo((history) => [...history.slice(-29), {
-      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions,
+      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking,
+      captions: manualCaptions, titles: manualTitles,
     }]);
     setManualRedo([]);
     setManualMusicVolume(volume);
@@ -226,14 +233,26 @@ export default function ProjectPage() {
   const changeManualCaptions = (captions: ManualCaption[]) => {
     if (!manualShots || manualCaptions === null) return;
     setManualUndo((history) => [...history.slice(-29), {
-      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions,
+      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking,
+      captions: manualCaptions, titles: manualTitles,
     }]);
     setManualRedo([]);
     setManualCaptions(captions);
   };
 
+  const changeManualTitles = (titles: ManualTitle[]) => {
+    if (!manualShots || manualTitles === null) return;
+    setManualUndo((history) => [...history.slice(-29), {
+      shots: manualShots, musicVolume: manualMusicVolume, musicDucking: manualMusicDucking,
+      captions: manualCaptions, titles: manualTitles,
+    }]);
+    setManualRedo([]);
+    setManualTitles(titles);
+  };
+
   const startManualEdit = () => {
     if (!timeline) return;
+    setSelectedManualShot(0);
     setManualShots(timeline.timeline.video_segments.map((shot) => ({
       clip_id: shot.clip_id, source_in_ms: shot.source_in_ms, source_out_ms: shot.source_out_ms,
       transition_in: shot.transition_in, transition_in_ms: shot.transition_in_ms, volume: shot.volume,
@@ -244,6 +263,10 @@ export default function ProjectPage() {
     setManualMusicVolume(project?.edit_options.manual_timeline?.music_volume ?? 1);
     setManualMusicDucking(project?.edit_options.manual_timeline?.music_ducking ?? null);
     setManualCaptions(timeline.trace.caption_segments ?? project?.edit_options.manual_timeline?.captions ?? null);
+    setManualTitles((timeline.timeline.text_overlays ?? []).map((overlay, overlay_index) => ({
+      overlay_index, text: overlay.text, start_s: overlay.start_ms / 1000,
+      end_s: overlay.end_ms / 1000, position: overlay.position,
+    })).filter((_, index) => timeline.timeline.text_overlays?.[index]?.role !== 'caption'));
   };
 
   const updateManualShot = (index: number, change: Partial<ManualShot>) => {
@@ -265,6 +288,11 @@ export default function ProjectPage() {
       setActionFailure({ title: 'Check caption text and timing', detail: 'Each caption needs text and a time range inside the edited video.' });
       return;
     }
+    if (manualTitles?.some((title) => !title.text.trim() || title.start_s < 0
+      || title.end_s <= title.start_s || title.end_s > editedDuration)) {
+      setActionFailure({ title: 'Check title text and timing', detail: 'Each title needs text and a time range inside the edited video.' });
+      return;
+    }
     if (manualCaptions?.length && project.edit_options.caption_style === 'None') {
       setActionFailure({ title: 'Choose a caption style', detail: 'Captions are off in this project. Set a caption style in Revise edit before rendering manual captions.' });
       return;
@@ -277,7 +305,7 @@ export default function ProjectPage() {
         prompt: project.raw_prompt ?? '', target_platform: project.target_platform,
         edit_options: { ...optionsForRevision(project.edit_options),
           manual_timeline: { shots: manualShots, music_volume: manualMusicVolume,
-            music_ducking: manualMusicDucking, captions: manualCaptions } },
+            music_ducking: manualMusicDucking, captions: manualCaptions, titles: manualTitles } },
         idempotency_key: crypto.randomUUID(), expected_prompt_version: project.prompt_version,
       });
       setManualShots(null);
@@ -727,25 +755,77 @@ export default function ProjectPage() {
             <div className="row" style={{ marginBottom: 12 }}>
               <button className="btn secondary small" type="button" disabled={!manualUndo.length} onClick={() => {
                 setManualRedo((history) => [...history, { shots: manualShots,
-                  musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions }]);
+                  musicVolume: manualMusicVolume, musicDucking: manualMusicDucking,
+                  captions: manualCaptions, titles: manualTitles }]);
                 const previous = manualUndo[manualUndo.length - 1];
                 setManualShots(previous.shots); setManualMusicVolume(previous.musicVolume);
                 setManualMusicDucking(previous.musicDucking); setManualCaptions(previous.captions);
+                setManualTitles(previous.titles);
                 setManualUndo(manualUndo.slice(0, -1));
               }}>Undo</button>
               <button className="btn secondary small" type="button" disabled={!manualRedo.length} onClick={() => {
                 setManualUndo((history) => [...history, { shots: manualShots,
-                  musicVolume: manualMusicVolume, musicDucking: manualMusicDucking, captions: manualCaptions }]);
+                  musicVolume: manualMusicVolume, musicDucking: manualMusicDucking,
+                  captions: manualCaptions, titles: manualTitles }]);
                 const next = manualRedo[manualRedo.length - 1];
                 setManualShots(next.shots); setManualMusicVolume(next.musicVolume);
                 setManualMusicDucking(next.musicDucking); setManualCaptions(next.captions);
+                setManualTitles(next.titles);
                 setManualRedo(manualRedo.slice(0, -1));
               }}>Redo</button>
               <button className="btn secondary small" type="button" onClick={() => setManualShots(null)}>Discard draft</button>
             </div>
+            <div className="manual-workspace" aria-label="Editable timeline">
+              <div className="manual-track-label">Video</div>
+              <div className="manual-track-scroll">
+                <div className="manual-track-row">
+                  {manualShots.map((shot, index) => {
+                    const source = project.clips.find((clip) => clip.id === shot.clip_id);
+                    const width = Math.max(36, (shot.source_out_ms - shot.source_in_ms - shot.transition_in_ms) / 1000 * 48);
+                    return <button key={`video-${index}`} type="button" draggable
+                      className={`manual-track-clip ${selectedManualShot === index ? 'selected' : ''}`}
+                      style={{ width }} title={`${source?.original_filename ?? shot.clip_id} · ${formatDuration(shot.source_in_ms / 1000)}–${formatDuration(shot.source_out_ms / 1000)}`}
+                      aria-label={`Select shot ${index + 1}; drag to reorder`}
+                      onClick={() => setSelectedManualShot(index)}
+                      onDragStart={(event) => { event.dataTransfer.setData('text/plain', String(index)); event.dataTransfer.effectAllowed = 'move'; }}
+                      onDragOver={(event) => event.preventDefault()}
+                      onDrop={(event) => { event.preventDefault();
+                        const from = Number(event.dataTransfer.getData('text/plain'));
+                        if (!Number.isInteger(from) || from < 0 || from >= manualShots.length || from === index) return;
+                        const next = [...manualShots]; const moved = next.splice(from, 1)[0]; next.splice(index, 0, moved);
+                        next[0] = { ...next[0], transition_in: 'cut', transition_in_ms: 0 };
+                        changeManual(next); setSelectedManualShot(index);
+                      }}>
+                      <strong>{index + 1}</strong><span>{source?.original_filename ?? shot.clip_id}</span>
+                    </button>;
+                  })}
+                </div>
+              </div>
+              <div className="manual-track-label">Source audio</div>
+              <div className="manual-track-scroll"><div className="manual-track-row">
+                {manualShots.map((shot, index) => <div key={`audio-${index}`} className="manual-track-audio"
+                  style={{ width: Math.max(36, (shot.source_out_ms - shot.source_in_ms - shot.transition_in_ms) / 1000 * 48) }}
+                  title={`Shot ${index + 1} source audio at ${shot.volume.toFixed(1)}×`}>
+                  {shot.volume > 0 ? `${shot.volume.toFixed(1)}×` : 'Muted'}
+                </div>)}
+              </div></div>
+              <div className="manual-track-label">Music</div>
+              <div className="manual-track-scroll"><div className="manual-track-row manual-track-summary">
+                {timeline.timeline.audio_segments.length ? `Music track · ${manualMusicVolume.toFixed(1)}×` : 'Unavailable · this edit has no music track'}
+              </div></div>
+              <div className="manual-track-label">Titles / captions</div>
+              <div className="manual-track-scroll"><div className="manual-track-row manual-track-summary">
+                {manualTitles?.map((title) => <span key={title.overlay_index} className="manual-track-text">
+                  {timeline.timeline.text_overlays?.[title.overlay_index]?.role ?? 'title'}: {title.text} · {formatDuration(title.start_s)}–{formatDuration(title.end_s)}
+                </span>)}
+                {manualCaptions?.length ? <span className="manual-track-text">{manualCaptions.length} caption cues · edit below</span> : null}
+                {!manualTitles?.length && !manualCaptions?.length ? 'No titles or captions in this edit' : null}
+              </div></div>
+            </div>
+            <p className="hint">Select a video block to highlight its controls below. Drag blocks to reorder. This draft is saved with the project when you render the edited version. Keyframes are unavailable.</p>
             {manualShots.map((shot, index) => {
               const source = project.clips.find((clip) => clip.id === shot.clip_id);
-              return <div className="plan-row" key={`${shot.clip_id}-${index}`}>
+              return <div className={`plan-row ${selectedManualShot === index ? 'manual-selected-row' : ''}`} key={`${shot.clip_id}-${index}`}>
                 <div className="plan-index">{index + 1}</div>
                 <div className="plan-main"><label>Source clip <select aria-label={`Shot ${index + 1} source clip`}
                   value={shot.clip_id} onChange={(event) => {
@@ -761,6 +841,16 @@ export default function ProjectPage() {
                 <label className="plan-range">Out (s)<input aria-label={`Shot ${index + 1} out point`} type="number" min="0.1" step="0.1"
                   max={source?.duration ?? undefined} value={shot.source_out_ms / 1000}
                   onChange={(event) => updateManualShot(index, { source_out_ms: Math.round(Number(event.target.value) * 1000) })} /></label>
+                <div className="plan-main manual-trim-handles">
+                  <label>In handle<input aria-label={`Shot ${index + 1} in handle`} type="range" min="0"
+                    max={Math.max(0, (shot.source_out_ms - 100) / 1000)} step="0.1"
+                    value={shot.source_in_ms / 1000}
+                    onChange={(event) => updateManualShot(index, { source_in_ms: Math.round(Number(event.target.value) * 1000) })} /></label>
+                  <label>Out handle<input aria-label={`Shot ${index + 1} out handle`} type="range"
+                    min={(shot.source_in_ms + 100) / 1000} max={source?.duration ?? shot.source_out_ms / 1000} step="0.1"
+                    value={shot.source_out_ms / 1000}
+                    onChange={(event) => updateManualShot(index, { source_out_ms: Math.round(Number(event.target.value) * 1000) })} /></label>
+                </div>
                 <label className="plan-range">Transition<select aria-label={`Shot ${index + 1} transition`} value={shot.transition_in}
                   disabled={index === 0}
                   onChange={(event) => updateManualShot(index, { transition_in: event.target.value,
@@ -842,6 +932,28 @@ export default function ProjectPage() {
                 onClick={() => { const start = manualCaptions.at(-1)?.end ?? 0;
                   changeManualCaptions([...manualCaptions, { start, end: Math.min(start + 1, manualDurationS / 1000),
                     text: 'New caption' }]); }}>Add caption</button>
+            </details>}
+            {manualTitles !== null && manualTitles.length > 0 && <details style={{ marginTop: 12 }}>
+              <summary>Titles and credits · edit text, timing and placement</summary>
+              {manualTitles.map((title, index) => <div className="row" key={title.overlay_index} style={{ marginTop: 8 }}>
+                <label>{timeline.timeline.text_overlays?.[title.overlay_index]?.role ?? 'Title'} text
+                  <input aria-label={`Title ${index + 1} text`} maxLength={500} value={title.text}
+                    onChange={(event) => changeManualTitles(manualTitles.map((item, at) =>
+                      at === index ? { ...item, text: event.target.value } : item))} /></label>
+                <label>Start (s)<input aria-label={`Title ${index + 1} start`} type="number" min="0" step="0.1"
+                  value={title.start_s} onChange={(event) => changeManualTitles(manualTitles.map((item, at) =>
+                    at === index ? { ...item, start_s: Number(event.target.value) } : item))} /></label>
+                <label>End (s)<input aria-label={`Title ${index + 1} end`} type="number" min="0.1" step="0.1"
+                  value={title.end_s} onChange={(event) => changeManualTitles(manualTitles.map((item, at) =>
+                    at === index ? { ...item, end_s: Number(event.target.value) } : item))} /></label>
+                <label>Position<select aria-label={`Title ${index + 1} position`} value={title.position}
+                  onChange={(event) => changeManualTitles(manualTitles.map((item, at) => at === index
+                    ? { ...item, position: event.target.value as ManualTitle['position'] } : item))}>
+                  <option value="center">Center</option><option value="below_title">Below title</option>
+                  <option value="top">Top</option><option value="lower_third">Lower third</option>
+                  <option value="bottom">Bottom</option>
+                </select></label>
+              </div>)}
             </details>}
             <p className="hint" style={{ marginTop: 8 }}>{timeline.timeline.audio_segments.length === 0 ? 'Music mix controls unavailable: no external music track is in this edit. ' : ''}Global framing remains in Revise edit. {manualCaptions === null ? 'Caption timing controls unavailable: this version has no saved transcription segments.' : 'Edited captions use the saved transcript and render as burn-in text.'}</p>
             <div className="row" style={{ marginTop: 12 }}>

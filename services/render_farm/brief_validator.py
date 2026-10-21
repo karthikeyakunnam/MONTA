@@ -85,6 +85,14 @@ def validate_brief_output(brief, timeline, encoded_report: dict, *,
             encoded.get("audio_peak", {}).get("evidence", {}),
             unavailable=encoded.get("audio_peak", {}).get("status") == "unavailable" or
             "audio_peak" not in encoded)
+    if ("audio", "speech_present") in required:
+        add("spoken_dialogue_present", False,
+            {"reason": "An audio stream and model-generated words do not independently establish audible spoken dialogue"},
+            unavailable=True)
+    if ("audio", "speech_boundaries") in required:
+        add("spoken_phrase_cut_alignment", False,
+            {"reason": "No human-verified source transcript and encoded cut-to-speech comparison was supplied"},
+            unavailable=True)
     if ("color", "natural") in required:
         neutral = ColorAdjustment()
         add("source_faithful_grade", all(item.color == neutral for item in timeline.video_segments),

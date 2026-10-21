@@ -518,6 +518,18 @@ class LexicalIntentExtractor:
                                  prompt, re.IGNORECASE):
             directives.append(CreativeDirective(category="audio", priority="required",
                                                 value="source_audio", source_span=match.group(0)))
+        for match in re.finditer(r"\b(?:keep|retain|preserve)\s+(?:the\s+)?(?:natural\s+)?"
+                                 r"source\s+(?:speech|dialogue)\b", prompt, re.IGNORECASE):
+            directives.extend((
+                CreativeDirective(category="audio", priority="required",
+                                  value="source_audio", source_span=match.group(0)),
+                CreativeDirective(category="audio", priority="required",
+                                  value="speech_present", source_span=match.group(0)),
+            ))
+        for match in re.finditer(r"\b(?:avoid\s+cutting|do\s+not\s+cut|don't\s+cut)\s+"
+                                 r"(?:spoken\s+)?(?:phrases?|sentences?|speech)\b", prompt, re.IGNORECASE):
+            directives.append(CreativeDirective(category="audio", priority="required",
+                                                value="speech_boundaries", source_span=match.group(0)))
         for match in re.finditer(r"\b(?:no|do\s+not|don't)\s+(?:(?:add|include|use)\s+)?"
                                  r"(?:music|captions?)(?:\s+(?:or|and)\s+(?:music|captions?))*\b",
                                  prompt, re.IGNORECASE):
@@ -576,18 +588,25 @@ class LexicalIntentExtractor:
     def _text_overlay_requirements(prompt: str) -> tuple[TextOverlayRequirement, ...]:
         requirements: list[TextOverlayRequirement] = []
         seen: dict[tuple[str, str], int] = {}
-        def opening_end_s(after: int) -> float | None:
+        def overlay_window(after: int) -> tuple[float | None, float | None]:
             sentence = re.split(r"[.!?\n]", prompt[after:], maxsplit=1)[0]
+            explicit = re.search(
+                r"\bfrom\s+(\d+(?:\.\d+)?)\s*(?:seconds?|s)?\s+to\s+"
+                r"(\d+(?:\.\d+)?)\s*(?:seconds?|s)\b", sentence, re.IGNORECASE)
+            if explicit:
+                start, end = float(explicit.group(1)), float(explicit.group(2))
+                if end > start:
+                    return start, end
             timing = re.search(
                 r"\bfor\s+(?:the\s+)?(?:opening|first)\s+"
                 r"(\d+(?:\.\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:seconds?|s)\b",
                 sentence, re.IGNORECASE,
             )
             if not timing:
-                return None
+                return None, None
             word = timing.group(1).casefold()
-            return float({"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
-                          "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}.get(word, word))
+            return None, float({"one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+                                "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10}.get(word, word))
 
         pattern = r'''"([^"\n]{1,200})"|'([^'\n]{1,200})'|\u201c([^\u201d\n]{1,200})\u201d'''
         previous_quote_end = 0
@@ -632,11 +651,12 @@ class LexicalIntentExtractor:
             previous_index = seen.get(key)
             if previous_index is None:
                 seen[key] = len(requirements)
+                start_s, end_s = overlay_window(match.end())
                 requirements.append(TextOverlayRequirement(
                     role=role, text=text, source_span=match.group(0), position=position,
                     color=color, font_family=font_family, wide_tracking=wide_tracking,
                     glow=glow, bold=bold,
-                    background=background, end_s=opening_end_s(match.end()),
+                    background=background, start_s=start_s, end_s=end_s,
                 ))
                 continue
 
@@ -668,10 +688,11 @@ class LexicalIntentExtractor:
             sentence_start = max(prompt.rfind(mark, 0, match.start()) for mark in ".!?\n") + 1
             context = prompt[sentence_start:match.start()].casefold()
             seen[("title", title)] = len(requirements)
+            start_s, end_s = overlay_window(match.end())
             requirements.append(TextOverlayRequirement(
                 role="title", text=title, source_span=match.group(0),
                 color="white" if re.search(r"\bwhite\b", context) else None,
-                end_s=opening_end_s(match.end()),
+                start_s=start_s, end_s=end_s,
             ))
         return tuple(requirements)
 

@@ -3,6 +3,7 @@
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from shared.contracts.base import revalidate
+from shared.contracts.intent import CreativeBrief
 from shared.contracts.timeline import CaptionCueIR, ColorAdjustment, TimelineIR, TransitionType, VideoSegmentIR
 from services.edit_executor.validator import EditPlanValidator
 
@@ -45,12 +46,31 @@ class ManualCaption(BaseModel):
         return self
 
 
+class ManualTitle(BaseModel):
+    """Override an existing prompt title, subtitle or credit by its stable order."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    overlay_index: int = Field(ge=0)
+    text: str = Field(min_length=1, max_length=500)
+    start_s: float = Field(ge=0)
+    end_s: float = Field(gt=0)
+    position: str = Field(pattern=r"^(center|below_title|top|lower_third|bottom)$")
+
+    @model_validator(mode="after")
+    def check_timing(self):
+        if self.end_s <= self.start_s or not self.text.strip():
+            raise ValueError("title needs nonblank text and an end after its start")
+        return self
+
+
 class ManualTimeline(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     shots: tuple[ManualShot, ...] = Field(min_length=1, max_length=100)
     music_volume: float | None = Field(None, ge=0, le=4)
     music_ducking: bool | None = None
     captions: tuple[ManualCaption, ...] | None = Field(None, max_length=200)
+    titles: tuple[ManualTitle, ...] | None = Field(None, max_length=30)
     speech_align: bool = False
 
     @model_validator(mode="after")
@@ -59,7 +79,34 @@ class ManualTimeline(BaseModel):
             later.start < earlier.start for earlier, later in zip(self.captions, self.captions[1:])
         ):
             raise ValueError("captions must be ordered by start time")
+        if self.titles is not None and len({item.overlay_index for item in self.titles}) != len(self.titles):
+            raise ValueError("each title overlay may be overridden once")
         return self
+
+
+def apply_manual_title_overrides(brief: CreativeBrief, titles: tuple[ManualTitle, ...] | None,
+                                 rendered_duration_s: float) -> CreativeBrief:
+    """Keep the brief and exact rasterized text in sync with saved user edits."""
+    if titles is None:
+        return brief
+    overlays = list(brief.text_overlays)
+    directives = list(brief.directives)
+    for title in titles:
+        if title.overlay_index >= len(overlays) or overlays[title.overlay_index].role == "caption":
+            raise ValueError(f"title overlay {title.overlay_index} is unavailable")
+        if title.end_s > rendered_duration_s + 0.001:
+            raise ValueError("title timing exceeds the edited video duration")
+        prior = overlays[title.overlay_index]
+        overlays[title.overlay_index] = revalidate(
+            prior, text=title.text, start_s=title.start_s, end_s=title.end_s,
+            position=title.position, source_span=f"manual {prior.role} override")
+        for index, directive in enumerate(directives):
+            if directive.category == "text" and directive.value == f"{prior.role}:{prior.text}":
+                directives[index] = revalidate(
+                    directive, value=f"{prior.role}:{title.text}",
+                    source_span=f"manual {prior.role} override", origin="explicit_setting")
+                break
+    return revalidate(brief, text_overlays=tuple(overlays), directives=tuple(directives))
 
 
 def apply_manual_timeline(base: TimelineIR, manual: ManualTimeline,

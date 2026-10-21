@@ -237,6 +237,32 @@ async def test_timestamped_observations_survive_structured_vision_failure():
     assert result.provenance.degraded and "structuring model unavailable" in result.provenance.degraded[0]
 
 
+async def test_ordered_beats_use_source_frames_without_clip_wide_structuring():
+    class SceneVision:
+        model_id = "local:scene"
+        structured_calls = 0
+
+        async def observe_with_arbitration(self, meta, images, times):
+            self.structured_calls += 1
+            raise ProviderUnavailableError("structuring unavailable")
+
+        async def describe_frame(self, meta, frame, time_s):
+            return "People greeting beside a venue sign"
+
+    media = SyntheticMediaBackend({"a": "static"})
+    cache = LRUIntelligenceCache()
+    vision = SceneVision()
+    team = VideoIntelligenceTeam(media, vision=vision, cache=cache)
+    meta = await media.probe(ClipSource(clip_id="a", path="/a.mp4"))
+    result = await team.analyze(meta, ordered_beats=True)
+    assert vision.structured_calls == 0
+    assert len(result.frame_evidence) >= 2
+    assert all(item.model_id == "local:scene" for item in result.frame_evidence)
+    assert not result.provenance.degraded
+    assert (await team.analyze(meta, ordered_beats=True)).provenance.cache_hit
+    assert team.cache_key(meta, ordered_beats=True) != team.cache_key(meta)
+
+
 async def test_targeted_short_shot_observations_keep_source_timestamps_and_model_identity():
     from shared.contracts.base import revalidate
     from shared.contracts.clip import FrameEvidence
@@ -263,6 +289,33 @@ async def test_targeted_short_shot_observations_keep_source_timestamps_and_model
                if item != clip.frame_evidence[0])
     assert all(0 <= item.time_s <= meta.duration_s for item in enriched.frame_evidence)
     assert any(item.time_s < 2 and item.model_id == "local:test" for item in enriched.frame_evidence)
+
+
+@pytest.mark.asyncio
+async def test_targeted_sampling_checks_unsampled_shot_before_action_at_measured_cut():
+    from shared.contracts.base import revalidate
+    from shared.contracts.clip import FrameEvidence
+    from shared.contracts.intent import SceneBeatRequirement
+
+    class LocalFrameVision:
+        model_id = "local:test"
+
+        async def describe_frame(self, meta, frame, time_s):
+            return "A man on stage raises his hand to address the audience"
+
+    media = SyntheticMediaBackend({"a": "static"}, durations={"a": 4.0})
+    meta = await media.probe(ClipSource(clip_id="a", path="/a.mp4"))
+    clip = revalidate(fuse(meta, signals("static"), None, vision_model=None),
+                      scene_cut_times_s=(2.0,),
+                      frame_evidence=(FrameEvidence(time_s=2.02,
+                                                    description="A man dancing with arms raised",
+                                                    model_id="local:original"),))
+    beat = SceneBeatRequirement(order=0, description="stage interaction", source_span="stage interaction")
+    enriched = await VideoIntelligenceTeam(media, vision=LocalFrameVision()).enrich_short_scene_evidence(
+        meta, clip, (beat,))
+    assert any(0 < item.time_s < 2 and item.model_id == "local:test"
+               for item in enriched.frame_evidence)
+    assert clip.frame_evidence[0] in enriched.frame_evidence
 
 
 async def test_vision_requires_capability():

@@ -8,8 +8,69 @@ from pydantic import ValidationError
 
 from services.edit_executor.caption_engine import CaptionEngine
 from services.edit_executor.compiler import FFmpegCompiler
-from services.timeline_generator.manual import ManualTimeline, apply_manual_timeline
+from services.timeline_generator.manual import ManualTimeline, apply_manual_timeline, apply_manual_title_overrides
 from shared.contracts.timeline import AudioSegmentIR, TimelineIR, VideoSegmentIR
+
+
+@pytest.mark.asyncio
+async def test_manual_title_text_timing_and_position_reach_encoded_mp4(tmp_path):
+    from services.prompt_engine.lexical_extractor import LexicalIntentExtractor
+    from services.render_farm.renderer import MediaRenderer
+    from services.render_farm.render_critic import inspect_render
+    from workers.tasks.pipeline_tasks import _materialize_prompt_visuals
+
+    source = tmp_path / "source.mp4"
+    output = tmp_path / "edited_title.mp4"
+    subprocess.run(["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                    "color=c=blue:s=360x640:d=2:r=24", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    str(source)], check=True)
+    original = LexicalIntentExtractor().extract("Show the exact title 'Original'").creative_brief
+    manual = ManualTimeline.model_validate({"shots": [{"clip_id": "a", "source_in_ms": 0,
+        "source_out_ms": 2000}], "titles": [{"overlay_index": 0, "text": "Changed",
+        "start_s": 0.2, "end_s": 1.5, "position": "center"}]})
+    edited_brief = apply_manual_title_overrides(original, manual.titles, 2.0)
+    assert edited_brief.text_overlays[0].text == "Changed"
+    assert edited_brief.directives[0].origin == "explicit_setting"
+    overlays, _, _ = _materialize_prompt_visuals(
+        edited_brief, 2000, tmp_path, "manual", 360, 640, manual_positions=True)
+    assert overlays[0].text == "Changed" and overlays[0].position == "center"
+    assert (overlays[0].start_ms, overlays[0].end_ms) == (200, 1500)
+    timeline = TimelineIR(project_id="manual-title", width=360, height=640, fps=24,
+        video_segments=(VideoSegmentIR(segment_id="one", clip_id="a", source_path=str(source),
+            source_in_ms=0, source_out_ms=2000, timeline_start_ms=0,
+            timeline_end_ms=2000, has_audio=False),),
+        text_overlays=overlays, total_duration_ms=2000)
+    result = await MediaRenderer().render(timeline, output_path=output)
+    assert result.success and result.validation_passed
+    report = await inspect_render(str(output), timeline, storage_root=str(tmp_path),
+                                  actual_duration_s=result.duration_s)
+    assert next(item for item in report["checks"] if item["name"].startswith("text:"))["status"] == "passed"
+
+
+def test_manual_title_cannot_target_missing_overlay_or_exceed_render_duration():
+    from services.prompt_engine.lexical_extractor import LexicalIntentExtractor
+    original = LexicalIntentExtractor().extract("Show title 'Original'").creative_brief
+    title = ManualTimeline.model_validate({"shots": [{"clip_id": "a", "source_in_ms": 0,
+        "source_out_ms": 1000}], "titles": [{"overlay_index": 0, "text": "Changed",
+        "start_s": 0, "end_s": 2, "position": "lower_third"}]}).titles
+    with pytest.raises(ValueError, match="exceeds"):
+        apply_manual_title_overrides(original, title, 1.0)
+    with pytest.raises(ValueError, match="unavailable"):
+        apply_manual_title_overrides(original, (title[0].model_copy(update={"overlay_index": 5}),), 3.0)
+
+
+def test_manual_title_override_survives_api_edit_options_serialization():
+    from app.schemas.project import EditOptions
+
+    options = EditOptions.model_validate({"manual_timeline": {
+        "shots": [{"clip_id": "a", "source_in_ms": 0, "source_out_ms": 2000}],
+        "titles": [{"overlay_index": 0, "text": "Human edited title",
+                    "start_s": 0.25, "end_s": 1.75, "position": "lower_third"}],
+    }})
+    restored = EditOptions.model_validate_json(options.model_dump_json())
+    title = restored.manual_timeline.titles[0]
+    assert (title.text, title.start_s, title.end_s, title.position) == (
+        "Human edited title", 0.25, 1.75, "lower_third")
 
 
 def test_reorder_trim_split_remove_and_compile(tmp_path):

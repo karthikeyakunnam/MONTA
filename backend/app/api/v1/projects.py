@@ -247,6 +247,9 @@ async def create_revision(project_id: str, payload: RevisionCreate, db: AsyncSes
             if manual.captions is not None and any(caption.end > rendered_duration_s
                                                    for caption in manual.captions):
                 raise ProjectConflict("Manual caption timing exceeds the edited video duration")
+            if manual.titles is not None and any(title.end_s > rendered_duration_s
+                                                 for title in manual.titles):
+                raise ProjectConflict("Manual title timing exceeds the edited video duration")
             if manual.captions and payload.edit_options.caption_style == "None":
                 raise ProjectConflict("Manual captions require a caption style")
         job = await service.revise(

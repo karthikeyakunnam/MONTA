@@ -323,6 +323,16 @@ async def test_explicit_calm_cuts_survive_conflicting_model_pace():
     assert "Explicit prompt pacing kept" in intent.pace.reasoning
 
 
+def test_quoted_title_explicit_source_window_survives_lexical_fallback():
+    prompt = ("Show the exact title 'Oath-Taking Ceremony' in the lower third "
+              "from 0 to 3 seconds. Keep natural source audio.")
+    intent = IntentEngine().lexical.extract(prompt)
+    assert len(intent.creative_brief.text_overlays) == 1
+    title = intent.creative_brief.text_overlays[0]
+    assert (title.text, title.position, title.start_s, title.end_s) == (
+        "Oath-Taking Ceremony", "lower_third", 0.0, 3.0)
+
+
 async def test_llm_failure_falls_back_to_lexical():
     llm = ScriptedProvider([ProviderUnavailableError("down")], vision=False)
     a = await IntentEngine(llm).analyze(NIKE)
