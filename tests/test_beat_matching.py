@@ -3,7 +3,7 @@
 import pytest
 
 from orchestration.agents.story.beat_matching import (
-    BeatMatchError, _candidates, _context_candidates, match_scene_beats,
+    BeatMatchError, BeatWindow, _candidates, _context_candidates, match_scene_beats,
 )
 from shared.contracts.base import revalidate
 from shared.contracts.clip import FrameEvidence
@@ -100,6 +100,40 @@ def test_adjacent_stage_action_uses_same_subject_not_next_scene():
     assert not _candidates(0, _beat(0, "stage interaction"), {"event": statue}, None)
 
 
+def test_repeated_raised_hand_in_one_measured_stage_shot_recovers_cold_run():
+    """Timestamped descriptions from the independent cold_oct22_d run, as a fixture."""
+    clip = _clip("event", [
+        (22.7, "A man in a yellow robe stands by a banner with his arms raised above his head"),
+        (23.3, "Two people stand in front of a stage; one has their hand raised while the other speaks"),
+        (23.77, "A man holding flowers above his head in a different shot"),
+    ], duration=25, cuts=(22.25, 23.75))
+    chosen = _candidates(0, _beat(0, "stage interaction"), {"event": clip}, None)
+    assert chosen and chosen[0].evidence_times_s == (22.7, 23.3)
+    assert chosen[0].source_out_s < 23.75
+    assert chosen[0].evidence_basis == "stage_action_and_subject_continuity"
+
+    only_one_action = revalidate(clip, frame_evidence=(
+        FrameEvidence(time_s=22.7, description="A man stands by a banner", model_id="local:test"),
+        *clip.frame_evidence[1:],
+    ))
+    assert not _candidates(0, _beat(0, "stage interaction"), {"event": only_one_action}, None)
+
+
+def test_podium_in_background_does_not_hide_visible_stage_action():
+    """Fixture from the cold_oct22_e descriptions, with podium only in the background."""
+    clip = _clip("event", [
+        (22.7, "Two people stand in front of a stage; one has their hand raised and the other speaks into a microphone"),
+        (23.3, "A man stands in front of a stage and gives a speech with a podium behind him"),
+    ], duration=25, cuts=(22.25, 23.75))
+    assert _candidates(0, _beat(0, "stage interaction"), {"event": clip}, None)
+
+    podium_only = _clip("podium", [
+        (1.0, "A man speaking at a podium"),
+        (1.5, "A speaker addressing the audience at the podium"),
+    ], duration=2)
+    assert not _candidates(0, _beat(0, "stage interaction"), {"podium": podium_only}, None)
+
+
 def test_source_blur_excludes_middle_of_sign_shot_without_claiming_scene_cut():
     clip = _clip("event", [(1.5, "Event banner beside road"),
                            (3.6, "Venue sign beside road"),
@@ -167,6 +201,21 @@ def test_greeting_context_excludes_car_and_seated_stage_in_source_fixture():
     assert any(4.75 < item.source_in_s < item.source_out_s <= 6 for item in context)
     assert not any(item.source_in_s < 1.25 or item.source_in_s >= 12.75
                    for item in context)
+
+
+def test_speculative_statue_greeting_cannot_anchor_required_greeting():
+    """Fixture from cold_oct22_f: an uncertain model guess was treated as a gesture."""
+    weak = _clip("statue", [
+        (19.24, "People under a canopy talking to each other"),
+        (21.504, "People gathered around a statue; a man reaches toward it, possibly greeting someone"),
+    ], duration=23, cuts=(18.5, 22.25))
+    assert not _candidates(0, _beat(0, "greetings"), {"statue": weak}, None)
+
+    clear = _clip("people", [
+        (1.6, "A man greets a woman with hands clasped"),
+        (2.2, "Two people are looking at each other and smiling at each other"),
+    ], duration=3)
+    assert _candidates(0, _beat(0, "greetings"), {"people": clear}, None)
 
 
 def test_significance_word_does_not_turn_statue_scene_into_signage():
@@ -392,6 +441,36 @@ def test_short_real_action_can_be_brief_when_other_beat_supplies_total_duration(
     assert [item.beat_index for item in selected][-1] == 1
     assert sum(item.source_out_s - item.source_in_s for item in selected) == pytest.approx(8)
     assert selected[-1].source_out_s - selected[-1].source_in_s <= 1.8
+
+
+def test_calm_ending_survives_trim_when_first_short_group_cannot_be_trimmed(monkeypatch):
+    """A bounded plan must try another group before declaring source margins impossible."""
+    from orchestration.agents.story import beat_matching
+
+    def window(beat, clip, start, end, left, right, *, anchor=True):
+        return BeatWindow(beat_index=beat, clip_id=clip, source_in_s=start,
+                          source_out_s=end, evidence_times_s=(left, right),
+                          supported_concepts=("fixture",), unmatched_concepts=(),
+                          relevance=3 if anchor else 1, is_anchor=anchor)
+
+    anchors = {
+        0: [window(0, "sign", 0, 5.53, .25, 4.78),
+            window(0, "sign", 6, 7.06, 6.25, 6.75)],
+        1: [window(1, "greet", 0, 1.09, .25, .8)],
+        2: [window(2, "stage", 0, 1.34, .3, .9)],
+        3: [window(3, "podium", 0, 2.34, .25, 1.8)],
+    }
+    context = window(0, "sign", 7.1, 9.8, 7.4, 8.7, anchor=False)
+    monkeypatch.setattr(beat_matching, "_candidates",
+                        lambda index, beat, clips, duration: [] if duration is not None else anchors[index])
+    monkeypatch.setattr(beat_matching, "_context_candidates",
+                        lambda index, beat, clips, found: [context] if index == 0 else [])
+    beats = tuple(_beat(i, name) for i, name in enumerate(
+        ("venue signage", "greetings", "stage interaction", "podium speaker")))
+    selected = match_scene_beats(beats, {}, 8, minimum_ending_s=1.6)
+    assert sum(w.source_out_s - w.source_in_s for w in selected) == pytest.approx(8)
+    assert sum(w.source_out_s - w.source_in_s for w in selected if w.beat_index == 3) >= 1.6
+    assert [w.beat_index for w in selected] == sorted(w.beat_index for w in selected)
 
 
 def test_banner_only_model_hallucination_does_not_anchor_venue_signage():

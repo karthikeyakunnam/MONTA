@@ -174,6 +174,7 @@ class ValidationRule(StrEnum):
     NO_SOURCE_OVERLAP = "no_source_overlap"
     NO_JUMP_CUTS = "no_jump_cuts"
     PACE_CUT_DENSITY = "pace_cut_density"
+    SOURCE_WINDOW_QUALITY = "source_window_quality"
 
 
 class ValidationViolation(BaseModel):

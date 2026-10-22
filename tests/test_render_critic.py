@@ -13,6 +13,26 @@ from shared.contracts.timeline import TextOverlayIR, TimelineIR, VideoSegmentIR
 
 
 @pytest.mark.asyncio
+async def test_encoded_opening_blur_is_reported_as_visual_review_warning(tmp_path):
+    output = tmp_path / "blurred_opening.mp4"
+    subprocess.run([
+        "ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+        "testsrc2=s=320x180:d=2:r=30", "-vf",
+        "boxblur=20:10:enable='lt(t,0.3)'", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+        str(output),
+    ], check=True)
+    segment = VideoSegmentIR(segment_id="opening", clip_id="source", source_path=str(output),
+                             source_in_ms=0, source_out_ms=2000,
+                             timeline_start_ms=0, timeline_end_ms=2000, has_audio=False)
+    plan = TimelineIR(project_id="opening", width=320, height=180, fps=30,
+                      video_segments=(segment,), total_duration_ms=2000)
+    report = await inspect_render(str(output), plan, storage_root=str(tmp_path), actual_duration_s=2)
+    focus = next(item for item in report["checks"] if item["name"] == "opening_focus")
+    assert focus["status"] == "warning"
+    assert focus["evidence"]["initial_to_later_ratio"] < 0.2
+
+
+@pytest.mark.asyncio
 async def test_truncated_output_reports_missing_late_cuts_without_frame_decode_error(tmp_path):
     output = tmp_path / "short.mp4"
     subprocess.run([

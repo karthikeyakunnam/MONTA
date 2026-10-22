@@ -86,7 +86,10 @@ class StoryArchitect:
         scene_beats = intent.creative_brief.scene_beats
         if scene_beats:
             try:
-                windows = match_scene_beats(scene_beats, clips, adapted.target_duration_s)
+                windows = match_scene_beats(
+                    scene_beats, clips, adapted.target_duration_s,
+                    minimum_ending_s=(min(2.0, adapted.target_duration_s / len(scene_beats) * 0.8)
+                                      if pace == Pace.SLOW else 0.0))
             except BeatMatchError as e:
                 raise StoryDesignError(str(e)) from e
             act_clips = {act.act_id: [] for act in adapted.acts}

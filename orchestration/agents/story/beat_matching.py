@@ -106,6 +106,16 @@ def _requested(value: str) -> set[str]:
 
 def _greeting_gesture(value: str) -> bool:
     words = _words(value)
+    # A model saying someone is *possibly* greeting a statue is not a
+    # witnessed interpersonal gesture. Retain genuinely visible hand/hand
+    # and palms-together descriptions in ordinary human scenes.
+    if words & {"statue", "idol", "monument", "sculpture"} or any(
+        phrase in value.casefold() for phrase in (
+            "possibly greeting", "perhaps greeting", "might be greeting",
+            "could be greeting", "appears to be greeting",
+        )
+    ):
+        return False
     return bool(words & {"greet", "greeting", "handshake", "namaste"}) or any(
         phrase in value.casefold() for phrase in (
             "shaking hands", "shake hands", "hands clasped", "clasped hands",
@@ -140,7 +150,12 @@ def _social_proximity(value: str) -> bool:
 def _stage_interaction(value: str) -> bool:
     """A screen, audience or empty platform alone cannot prove interaction."""
     words = _words(value)
-    if "podium" in words and not words & {"together", "exchange", "presenting", "handing"}:
+    # A podium merely visible behind an active subject is scene context. A
+    # person only described as speaking *at* the podium still belongs to the
+    # podium beat unless a separate interaction is observable.
+    background_podium = bool(re.search(r"\bpodium\s+(?:is\s+)?behind\b", value.casefold()))
+    if ("podium" in words and not background_podium and
+            not words & {"together", "exchange", "presenting", "handing"}):
         return False
     raised_hand = any(phrase in value.casefold() for phrase in (
         "hand raised", "raised hand", "hand is raised", "hand held up"))
@@ -152,7 +167,7 @@ def _stage_interaction(value: str) -> bool:
         "greet", "greeting", "handshake", "handing", "addressing",
         "speech",
     }) or (raised_hand and bool(words & {"stage", "platform"}) and
-           bool(words & {"person", "man", "woman", "speaker"}))
+           bool(words & {"person", "people", "man", "men", "woman", "women", "speaker"}))
 
 
 def _shared_visible_attire(first: str, second: str) -> bool:
@@ -178,6 +193,18 @@ def _person_on_stage(value: str) -> bool:
         r"\b(?:man|woman|person|people|men|women|speaker)\s+(?:\w+\s+){0,3}(?:on|at) (?:the )?stage\b",
         value.casefold(),
     ))
+
+
+def _raised_hand_person(value: str) -> bool:
+    """Visible action continuity, not standalone proof of a stage beat."""
+    words = _words(value)
+    if words & {"statue", "idol", "painting", "poster", "screen"}:
+        return False
+    return bool(words & {"man", "woman", "person", "people", "men", "women"}) and bool(
+        re.search(r"\b(?:hand|hands|arm|arms)\s+(?:is\s+|are\s+)?raised\b|"
+                  r"\braised\s+(?:his\s+|her\s+|their\s+)?(?:hand|hands|arm|arms)\b|"
+                  r"\b(?:hand|hands|arm|arms)\s+(?:above|over)\s+(?:his|her|their)\s+head\b",
+                  value.casefold()))
 
 
 def _context_support(description: str, beat: SceneBeatRequirement) -> bool:
@@ -363,7 +390,9 @@ def _candidates(index: int, beat: SceneBeatRequirement, clips: Mapping[str, Clip
                     right.time_s - left.time_s <= 1.0 and
                     (_stage_interaction(left.description) or
                      _stage_interaction(right.description)) and
-                    _shared_visible_attire(left.description, right.description))
+                    (_shared_visible_attire(left.description, right.description) or
+                     (_raised_hand_person(left.description) and
+                      _raised_hand_person(right.description))))
                 if stage_continuity and not stage_pair:
                     support.add("stage")
                     evidence_basis = "stage_action_and_subject_continuity"
@@ -486,7 +515,8 @@ def _nonoverlapping(windows: Sequence[BeatWindow]) -> bool:
 
 
 def _variable_scene_beats(beats: Sequence[SceneBeatRequirement],
-                          clips: Mapping[str, ClipIntelligence], target_duration_s: float
+                          clips: Mapping[str, ClipIntelligence], target_duration_s: float,
+                          minimum_ending_s: float = 0.0,
                           ) -> tuple[BeatWindow, ...]:
     """Assemble shorter verified shots; never stretch or repeat a source range."""
     anchors = [_candidates(index, beat, clips, None) for index, beat in enumerate(beats)]
@@ -501,13 +531,15 @@ def _variable_scene_beats(beats: Sequence[SceneBeatRequirement],
     grouped: list[list[tuple[BeatWindow, ...]]] = []
     preferred_minimum_s = min(3.0, max(1.0, target_duration_s / len(beats) * 0.5))
     minimum_by_beat_s = []
-    for options in choices:
+    for beat_index, options in enumerate(choices):
         # A short but genuine event must not be rejected solely because a
         # uniform beat allotment is longer than all distinct available shots.
         # The total target remains mandatory; other beats must supply time.
         unique_ranges = {(w.clip_id, w.source_in_s, w.source_out_s) for w in options}
         available_s = sum(end - start for _, start, end in unique_ranges)
-        minimum_beat_s = min(preferred_minimum_s, available_s)
+        minimum_beat_s = min(
+            max(preferred_minimum_s,
+                minimum_ending_s if beat_index == len(beats) - 1 else 0.0), available_s)
         minimum_by_beat_s.append(minimum_beat_s)
         groups = []
         for count in range(1, min(7, len(options)) + 1):
@@ -558,40 +590,45 @@ def _variable_scene_beats(beats: Sequence[SceneBeatRequirement],
         raise BeatMatchError(
             f"Ordered, nonrepeated evidence-backed shots: bounded search found {maximum:.2f}s "
             f"toward the requested {target_duration_s:.2f}s; no footage was stretched or repeated")
-    chosen = min(feasible, key=lambda group: (len(group),
-                 sum(w.source_out_s - w.source_in_s for w in group) - target_duration_s,
-                 -sum(w.relevance for w in group)))
-    excess_ms = round((sum(w.source_out_s - w.source_in_s for w in chosen) - target_duration_s) * 1000)
-    trimmed = list(chosen)
-    beat_duration_ms = {index: round(sum(w.source_out_s - w.source_in_s for w in chosen
-                                         if w.beat_index == index) * 1000)
-                        for index in range(len(beats))}
     minimum_beat_ms = {index: round(value * 1000)
                        for index, value in enumerate(minimum_by_beat_s)}
-    for index in range(len(trimmed) - 1, -1, -1):
-        item = trimmed[index]
+    for chosen in sorted(feasible, key=lambda group: (
+            len(group), sum(w.source_out_s - w.source_in_s for w in group) - target_duration_s,
+            -sum(w.relevance for w in group))):
+        excess_ms = round((sum(w.source_out_s - w.source_in_s for w in chosen) - target_duration_s) * 1000)
+        trimmed = list(chosen)
+        beat_duration_ms = {index: round(sum(w.source_out_s - w.source_in_s for w in chosen
+                                             if w.beat_index == index) * 1000)
+                            for index in range(len(beats))}
+        # Trim the longest beat first. Cutting the ending first can leave a
+        # five-second opener followed by one-second beats in a calm edit.
+        trim_order = sorted(range(len(trimmed)), key=lambda index: (
+            -beat_duration_ms[trimmed[index].beat_index], -index))
+        for index in trim_order:
+            item = trimmed[index]
+            if excess_ms <= 0:
+                break
+            removable_end = max(0, round((item.source_out_s - item.evidence_times_s[1] - 0.08) * 1000))
+            remove = min(excess_ms, removable_end,
+                         max(0, beat_duration_ms[item.beat_index] - minimum_beat_ms[item.beat_index]))
+            item = replace(item, source_out_s=round(item.source_out_s - remove / 1000, 3))
+            excess_ms -= remove
+            beat_duration_ms[item.beat_index] -= remove
+            removable_start = max(0, round((item.evidence_times_s[0] - item.source_in_s - 0.08) * 1000))
+            remove = min(excess_ms, removable_start,
+                         max(0, beat_duration_ms[item.beat_index] - minimum_beat_ms[item.beat_index]))
+            item = replace(item, source_in_s=round(item.source_in_s + remove / 1000, 3))
+            excess_ms -= remove
+            beat_duration_ms[item.beat_index] -= remove
+            trimmed[index] = item
         if excess_ms <= 0:
-            break
-        removable_end = max(0, round((item.source_out_s - item.evidence_times_s[1] - 0.08) * 1000))
-        remove = min(excess_ms, removable_end,
-                     max(0, beat_duration_ms[item.beat_index] - minimum_beat_ms[item.beat_index]))
-        item = replace(item, source_out_s=round(item.source_out_s - remove / 1000, 3))
-        excess_ms -= remove
-        beat_duration_ms[item.beat_index] -= remove
-        removable_start = max(0, round((item.evidence_times_s[0] - item.source_in_s - 0.08) * 1000))
-        remove = min(excess_ms, removable_start,
-                     max(0, beat_duration_ms[item.beat_index] - minimum_beat_ms[item.beat_index]))
-        item = replace(item, source_in_s=round(item.source_in_s + remove / 1000, 3))
-        excess_ms -= remove
-        beat_duration_ms[item.beat_index] -= remove
-        trimmed[index] = item
-    if excess_ms > 0:
-        raise BeatMatchError("Evidence margins prevent trimming short shots to the exact target duration")
-    return tuple(trimmed)
+            return tuple(trimmed)
+    raise BeatMatchError("Evidence margins prevent trimming short shots to the exact target duration")
 
 
 def match_scene_beats(beats: Sequence[SceneBeatRequirement],
-                      clips: Mapping[str, ClipIntelligence], target_duration_s: float) -> tuple[BeatWindow, ...]:
+                      clips: Mapping[str, ClipIntelligence], target_duration_s: float,
+                      *, minimum_ending_s: float = 0.0) -> tuple[BeatWindow, ...]:
     """Select one nonoverlapping source window per beat in prompt order.
 
     Missing evidence raises an actionable error. This is a proposal from local
@@ -607,7 +644,7 @@ def match_scene_beats(beats: Sequence[SceneBeatRequirement],
         choices = _candidates(index, beat, clips, duration)
         if not choices:
             try:
-                return _variable_scene_beats(beats, clips, target_duration_s)
+                return _variable_scene_beats(beats, clips, target_duration_s, minimum_ending_s)
             except BeatMatchError as variable_error:
                 detail = str(variable_error)
             raise BeatMatchError(
@@ -641,7 +678,7 @@ def match_scene_beats(beats: Sequence[SceneBeatRequirement],
     visit(0, (), 0.0)
     if best is None:
         try:
-            return _variable_scene_beats(beats, clips, target_duration_s)
+            return _variable_scene_beats(beats, clips, target_duration_s, minimum_ending_s)
         except BeatMatchError as error:
             raise BeatMatchError(
                 "Required scene beats have no nonoverlapping source windows at the requested duration. "

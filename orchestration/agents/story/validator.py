@@ -43,6 +43,7 @@ from shared.contracts.story import (
 )
 from shared.contracts.vocab import Pace
 from orchestration.agents.story.selection import BASE_CUT_S
+from orchestration.agents.story.beat_matching import _usable_spans
 
 BASE_ENERGY_JUMP: dict[Pace, float] = {Pace.SLOW: 3.0, Pace.MEDIUM: 4.0, Pace.FAST: 4.5, Pace.AGGRESSIVE: 5.5}
 RELEASE_DROP_FACTOR = 1.5
@@ -150,6 +151,14 @@ class TimelineValidator:
                 add(ValidationRule.NO_INVALID_CLIPS, f"clip '{s.clip_id}' is unusable: {clip.unusable_reason}", [s.index], [s.clip_id])
             if s.clip_id in rejected:
                 add(ValidationRule.NO_INVALID_CLIPS, f"clip '{s.clip_id}' was rejected but is on the timeline", [s.index], [s.clip_id])
+            if len(clip.sharpness_samples) >= 3 and not any(
+                s.source_in >= start - c.epsilon and s.source_out <= end + c.epsilon
+                for start, end in _usable_spans(clip)
+            ):
+                add(ValidationRule.SOURCE_WINDOW_QUALITY,
+                    f"segment {s.index} source {s.source_in:.2f}–{s.source_out:.2f}s crosses a measured "
+                    "scene discontinuity or soft-frame safety margin; inspect the encoded frames",
+                    [s.index], [s.clip_id], severity="warning")
             if s.act_id not in act_ids:
                 add(ValidationRule.NO_INVALID_CLIPS, f"segment {s.index} references unknown act '{s.act_id}'", [s.index], [s.clip_id])
             if s.source_out > clip.duration_s + c.epsilon or s.duration > clip.duration_s + c.epsilon:

@@ -25,6 +25,23 @@ def _image(part) -> np.ndarray:
     return np.asarray(Image.open(io.BytesIO(part.data)).convert("RGB"))
 
 
+def _central_detail_variance(frame: np.ndarray) -> float:
+    """Measured spatial detail, excluding borders and corner branding.
+
+    This cannot identify an out-of-focus subject or judge intentional blur;
+    only a large detail recovery within the opening is worth a warning.
+    """
+    height, width = frame.shape[:2]
+    center = frame[round(height * 0.15):round(height * 0.85),
+                   round(width * 0.1):round(width * 0.9)]
+    gray = center.astype(np.float32).mean(axis=2)
+    if min(gray.shape) < 3:
+        return 0.0
+    laplacian = (-4 * gray[1:-1, 1:-1] + gray[:-2, 1:-1] + gray[2:, 1:-1]
+                 + gray[1:-1, :-2] + gray[1:-1, 2:])
+    return float(np.var(laplacian))
+
+
 async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
                          storage_root: str, actual_duration_s: float,
                          scene_beats=(), captions_burned: bool = False) -> dict:
@@ -100,6 +117,25 @@ async def inspect_render(path: str, timeline, *, ffmpeg_bin: str = "ffmpeg",
                    "Near-black frames detected; review intentional fades or source darkness" if intervals else
                    "No near-black intervals detected"),
     })
+
+    opening_s = timeline.video_segments[0].timeline_end_ms / 1000 if timeline.video_segments else 0
+    if opening_s >= 1.2 and video_duration >= 1.05 and timeline.video_segments[0].fade_in_ms == 0:
+        focus_times = (0.1, 0.5, 1.0)
+        focus_frames = await media.keyframes(meta, focus_times, width=160)
+        detail = [_central_detail_variance(_image(frame)) for frame in focus_frames]
+        recovered = float(np.median(detail[1:]))
+        ratio = detail[0] / recovered if recovered > 0 else 1.0
+        checks.append({"name": "opening_focus", "status": "warning" if recovered >= 100 and ratio < 0.2
+                       else "passed", "detail": "Relative central-frame detail in the first second; "
+                       "a warning needs visual review and does not establish subject focus",
+                       "evidence": {"times_s": focus_times,
+                                    "central_detail_variance": [round(value, 1) for value in detail],
+                                    "initial_to_later_ratio": round(ratio, 3),
+                                    "warning_ratio_below": 0.2}})
+    else:
+        checks.append({"name": "opening_focus", "status": "unavailable",
+                       "detail": "Opening shot or encoded output is too short to sample, or it has an intentional fade-in",
+                       "evidence": {"opening_shot_duration_s": round(opening_s, 3)}})
 
     for overlay in timeline.text_overlays:
         if overlay.role not in {"title", "subtitle", "credit", "caption"}:

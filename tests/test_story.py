@@ -5,7 +5,7 @@ import json
 import pytest
 
 from orchestration.agents.story import DEFAULT_LIBRARY, StoryArchitect, StoryDesignError, StoryRefiner, TimelineValidator
-from orchestration.agents.story.assembly import _source_ordered_progression_windows, window_energy
+from orchestration.agents.story.assembly import _source_ordered_progression_windows, _windows, window_energy
 from orchestration.agents.story.validator import ActSpec, ValidationConfig
 from services.context_composer.platform_rules import PLATFORM_SPECS
 from services.prompt_engine import IntentEngine
@@ -282,6 +282,77 @@ def test_progression_repair_does_not_cross_every_short_measured_scene():
     original = [(0, 2), (4, 6)]
     assert _source_ordered_progression_windows(
         clip, original, "rise", DEFAULT_LIBRARY.get("event").validation) == original
+
+
+def test_generic_source_window_avoids_measured_soft_opening_when_clear_take_exists():
+    from shared.contracts.base import revalidate
+
+    clip = revalidate(
+        make_clip("event", 5, duration=6), peak_time_s=0.6,
+        scene_cut_times_s=(3.0,),
+        sharpness_samples=tuple((i * 0.25, 0.002 if i < 5 else 0.025)
+                                for i in range(24)),
+    )
+    selected = _windows(clip, 1.5, 3.0, 6.0)
+    assert len(selected) == 1
+    assert selected[0][0] >= 1.13
+    assert selected[0][1] <= 3.0
+
+
+def test_story_validation_reports_unavoidable_measured_soft_source_window():
+    from shared.contracts.base import revalidate
+
+    clip = revalidate(
+        make_clip("event", 5, duration=3),
+        sharpness_samples=tuple((i * 0.25, 0.002 if i == 4 else 0.025)
+                                for i in range(12)),
+    )
+    timeline = (seg(0, "event", 0, 2.0, hero=True),)
+    report = TimelineValidator().validate(timeline, [ActSpec("a1", "hold")],
+                                          {"event": clip}, Pace.SLOW)
+    assert report.passed
+    assert any(v.rule == ValidationRule.SOURCE_WINDOW_QUALITY and v.severity == "warning"
+               and v.segment_indices == (0,) for v in report.violations)
+
+
+def test_source_quality_does_not_move_opening_to_unrelated_late_scene():
+    from shared.contracts.base import revalidate
+
+    clip = revalidate(
+        make_clip("montage", 5, duration=20), peak_time_s=1.0,
+        scene_cut_times_s=tuple(float(i) for i in range(1, 15)),
+        sharpness_samples=tuple((i * 0.25, 0.002 if i < 5 else 0.025)
+                                for i in range(80)),
+    )
+    selected = _windows(clip, 2.0, 2.5, 5.0)
+    assert all(start < 3.5 for start, _ in selected)
+    assert sum(end - start for start, end in selected) == pytest.approx(2.0)
+
+
+def test_generic_window_respects_measured_scene_cut_without_sharpness_samples():
+    from shared.contracts.base import revalidate
+
+    clip = revalidate(make_clip("event", 5, duration=6), peak_time_s=2.5,
+                      scene_cut_times_s=(3.0,))
+    selected, = _windows(clip, 2.0, 3.0, 6.0)
+    assert not (selected[0] < 3.0 < selected[1])
+
+
+def test_progression_repair_excludes_soft_interval_in_measured_scene():
+    from shared.contracts.base import revalidate
+
+    clip = revalidate(
+        make_clip("event", 5, duration=8),
+        energy_curve=(0.2, 0.4, 0.7, 0.8, 0.2, 0.4, 0.7, 0.8),
+        sharpness_samples=tuple((i * 0.25, 0.002 if 2 <= i <= 4 else 0.025)
+                                for i in range(32)),
+    )
+    original = [(0.0, 2.0), (4.0, 6.0)]
+    repaired = _source_ordered_progression_windows(
+        clip, original, "rise", DEFAULT_LIBRARY.get("event").validation)
+    assert repaired != original
+    assert repaired[0][0] >= 1.13
+    assert repaired[0][1] <= repaired[1][0]
 
 
 def test_each_rule_fires():

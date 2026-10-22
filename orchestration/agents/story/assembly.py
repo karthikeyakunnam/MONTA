@@ -28,11 +28,12 @@ Repair
 """
 
 import math
-from itertools import product
+from itertools import combinations, product
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 from orchestration.agents.story.selection import AdaptedAct, AdaptedPattern, emotion_related, role_match
+from orchestration.agents.story.beat_matching import _usable_spans
 from orchestration.agents.story.validator import ActSpec, TimelineValidator, ValidationConfig
 from shared.contracts.clip import ClipIntelligence
 from shared.contracts.explain import clamp
@@ -309,16 +310,69 @@ def _windows(clip: ClipIntelligence, total_len: float, rhythm: float, max_piece:
     k = max(1, min(k, int(total_len / MIN_CUT_S)))
     piece = total_len / k
     d = clip.duration_s
+    usable = _usable_spans(clip)
+
+    def clear_window(region_start: float, region_end: float, preferred: float) -> tuple[float, float] | None:
+        # Measured cuts and brief soft frames constrain a source window. The
+        # signal is technical quality only; it does not establish scene meaning.
+        candidates = []
+        for span_start, span_end in usable:
+            low, high = max(span_start, region_start), min(span_end, region_end)
+            if high - low < piece - 0.001:
+                continue
+            for start in (low, clamp(preferred, low, high - piece), high - piece):
+                if abs(start - preferred) > max(piece, rhythm):
+                    continue
+                end = start + piece
+                # Preserve the chosen source moment when possible. High
+                # motion alone must not send an opening to a distant scene.
+                candidates.append((-abs(start - preferred), window_energy(clip, start, end),
+                                   -start, start, end))
+        if not candidates:
+            return None
+        _, _, _, start, end = max(candidates)
+        return start, end
+
     if k == 1:
         centre = clip.peak_time_s
         src_in = clamp(centre - piece / 2, 0, max(0.0, d - piece))
-        return [(src_in, src_in + piece)]
-    out = []
-    for i in range(k):
-        r0, r1 = d * i / k, d * (i + 1) / k
-        centre = _region_peak(clip, r0, r1)
-        src_in = clamp(centre - piece / 2, r0, max(r0, r1 - piece))
-        out.append((src_in, src_in + piece))
+        out = [clear_window(0, d, src_in) or (src_in, src_in + piece)]
+    else:
+        out = []
+        for i in range(k):
+            r0, r1 = d * i / k, d * (i + 1) / k
+            centre = _region_peak(clip, r0, r1)
+            src_in = clamp(centre - piece / 2, r0, max(r0, r1 - piece))
+            out.append(clear_window(r0, r1, src_in) or (src_in, src_in + piece))
+    if all(any(a >= start - 0.001 and b <= end + 0.001 for start, end in usable)
+           for a, b in out):
+        return out
+
+    # A montage can have no clear shot long enough for an allocated piece.
+    # Pack the allocation into the fewest distinct measured shots instead of
+    # quietly rendering across a hard cut or focus drop. If even that is
+    # impossible, retain the nominal plan so validation can report the limit.
+    nearby_limit = max(total_len, rhythm) * 1.5
+    candidates = sorted((span for span in usable
+                         if min(span[1] - span[0], max_piece) >= MIN_CUT_S
+                         and abs((span[0] + span[1]) / 2 - clip.peak_time_s) <= nearby_limit),
+                        key=lambda span: (-min(span[1] - span[0], max_piece),
+                                          abs((span[0] + span[1]) / 2 - clip.peak_time_s)))[:20]
+    candidates.sort()
+    for count in range(1, min(k + 1, 4, len(candidates)) + 1):
+        feasible = []
+        for spans in combinations(candidates, count):
+            capacities = [min(end - start, max_piece) for start, end in spans]
+            if sum(capacities) + 0.001 < total_len or count * MIN_CUT_S > total_len + 0.001:
+                continue
+            gaps = sum(max(0.0, b[0] - a[1]) for a, b in zip(spans, spans[1:]))
+            distance = sum(abs((start + end) / 2 - clip.peak_time_s) for start, end in spans)
+            feasible.append((gaps, distance, -sum(capacities), spans, capacities))
+        if feasible:
+            _, _, _, spans, capacities = min(feasible)
+            lengths = waterfill([rhythm] * count, [MIN_CUT_S] * count, capacities, total_len)
+            return [((start + end - length) / 2, (start + end + length) / 2)
+                    for (start, end), length in zip(spans, lengths)]
     return out
 
 
@@ -339,18 +393,23 @@ def _source_ordered_progression_windows(
     energies = [window_energy(clip, *window) for window in windows]
     crosses_cut = any(a + 0.01 < cut < b - 0.01 for a, b in windows
                       for cut in clip.scene_cut_times_s)
-    if not crosses_cut and TimelineValidator._direction_ok(direction, energies, profile)[0]:
+    usable = _usable_spans(clip)
+    crosses_unsafe = bool(usable) and any(not any(
+        a >= start - 0.001 and b <= end + 0.001 for start, end in usable
+    ) for a, b in windows)
+    if not crosses_cut and not crosses_unsafe and TimelineValidator._direction_ok(direction, energies, profile)[0]:
         return windows
 
     bounds = (0.0, *sorted(cut for cut in clip.scene_cut_times_s
                            if 0 < cut < clip.duration_s), clip.duration_s)
+    spans = usable or tuple(zip(bounds, bounds[1:]))
     by_region: list[list[tuple[float, float, float]]] = []
     for index, (nominal_start, nominal_end) in enumerate(windows):
         piece = nominal_end - nominal_start
         region_start = clip.duration_s * index / count
         region_end = clip.duration_s * (index + 1) / count
         candidates: dict[int, tuple[float, float, float]] = {}
-        for span_start, span_end in zip(bounds, bounds[1:]):
+        for span_start, span_end in spans:
             low = max(region_start, span_start + (0.06 if span_start else 0))
             high = min(region_end, span_end - (0.06 if span_end < clip.duration_s else 0))
             if high - low < piece - 0.001:
